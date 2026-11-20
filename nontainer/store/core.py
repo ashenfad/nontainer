@@ -818,10 +818,18 @@ class Store(_Publishing):
             return
         self._require_own_layout(op)
         self._require_kvgit(op)
-        whole = self._expanded_ref(ref)
-        self._require_registered(whole)
         from kvgit import KvgitError
 
+        try:
+            whole = self._expanded_ref(ref)
+        except (WorkspaceError, KvgitError):
+            # Expanding a short id walks the version's branch, which an
+            # unpublish may take mid-walk. The commit is not whole yet,
+            # so only the version is asked after: one that is still
+            # published keeps the expansion's own error.
+            self._require_registered(ref, any_commit=True)
+            raise
+        self._require_registered(whole)
         try:
             yield whole
         except (WorkspaceError, KvgitError):
@@ -1155,8 +1163,10 @@ class Store(_Publishing):
                 repo.branches.create(_ANCHOR_BRANCH)  # at the empty root
         return _ANCHOR_BRANCH
 
-    def _require_registered(self, ref: Ref) -> None:
-        """A publication ref names a version the registry still holds.
+    def _require_registered(self, ref: Ref, *, any_commit: bool = False) -> None:
+        """A publication ref names a version the registry still holds,
+        at the commit the ref carries (``any_commit``: at whatever
+        commit, for a ref whose commit is not spelled whole yet).
 
         Parsed back out of the branch name, since that is what a ref
         carries: ``@store/pub/<name>/<version>``.
@@ -1165,7 +1175,9 @@ class Store(_Publishing):
         row = ((self._registry_read().get(name) or {}).get("versions") or {}).get(
             version
         )
-        if row is None or Ref.parse(row["ref"]).commit != ref.commit:
+        if row is None or (
+            not any_commit and Ref.parse(row["ref"]).commit != ref.commit
+        ):
             raise WorkspaceError(
                 f"No longer published: {str(ref)!r} names version "
                 f"{version!r} of {name!r}, which this store's publication "

@@ -523,8 +523,9 @@ One publish writes three things:
   refused, and the next `v<N>` skips it. `unpublish` works the same way
   round. It takes the record out as a reservation of its own, removes
   the tag and the branch, then gives the reservation back. If the
-  removal fails, the record goes back too, so a failed unpublish leaves
-  the version published and calling it again finishes the job.
+  removal fails while the branch is still there, the version goes back
+  whole, record and tag, so calling it again finishes the job; once the
+  branch has gone, the version is gone.
 
   A process that dies mid-publish leaves its reservation, a branch,
   and usually its tag. Publishing the same thing again adopts them: the

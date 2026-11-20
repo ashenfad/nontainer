@@ -946,9 +946,10 @@ class _Publishing:
         this call holds while it removes the tag and the branch, so no
         publish can claim the version or write its branch until they
         are gone. The version stops resolving the moment the record
-        goes. If removing them fails, the record is put back and the
-        call raises: a failed unpublish leaves the version published,
-        and calling it again finishes the job.
+        goes. If removing them fails while the branch is still there,
+        the version is put back whole, its record and its tag, and the
+        call raises: calling it again finishes the job. Once the branch
+        has gone the version is gone, whatever failed after it.
 
         A version with no record but a branch or a tag of its name is
         what a publish that died before writing its record leaves
@@ -1237,8 +1238,8 @@ class _Publishing:
         or two, never claim one version. ``version=None`` takes the next
         free ``v<N>``, past every version the lineage holds or another
         call has reserved, unless an earlier attempt of this same
-        publish reserved a v-numbered version and died: that one is
-        resumed. An explicit version must be unpublished and unreserved,
+        publish, which named no version either, reserved one and died
+        or is still going: that one is resumed. An explicit version must be unpublished and unreserved,
         or reserved by an attempt of this same publish.
         """
 
@@ -1273,7 +1274,7 @@ class _Publishing:
                     (
                         v
                         for v, entry in pending.items()
-                        if _same_attempt(entry, attempt) and _VERSION_NUMBER_RE.match(v)
+                        if _same_attempt(entry, attempt) and entry.get("auto")
                     ),
                     key=_version_order,
                 )
@@ -1295,6 +1296,11 @@ class _Publishing:
                 "op": "publish",
                 "token": token,
                 "since": time.time(),
+                # Whether the version was picked as the next free one.
+                # Only such a reservation is resumed by a call that
+                # names no version: one that named its own asked for
+                # something else, however alike the tree.
+                "auto": version is None,
                 **attempt,
             }
             record.setdefault("versions", {})
@@ -1321,7 +1327,8 @@ class _Publishing:
         The reservation must still be this call's, or one an attempt of
         this same publish took over: the commit both wrote is the same.
         A version already recorded at this commit was recorded by such
-        an attempt, and reads as published. Anything else means an
+        an attempt, and reads as published, with the pointer moved to
+        it if this call asked for that. Anything else means an
         unpublish took the reservation over first, and the version is
         refused rather than recorded over whatever that left.
         """
@@ -1334,6 +1341,13 @@ class _Publishing:
             recorded = versions.get(version)
             if recorded is not None:
                 if Ref.parse(recorded["ref"]).commit == commit:
+                    # An attempt of this same publish recorded it first.
+                    # It may have been asked to leave the pointer alone,
+                    # and this call to move it: what this call asked
+                    # for still happens.
+                    if current and held.get("current") != version:
+                        held["current"] = version
+                        registry[name] = held
                     return self._publication(name, registry)
                 raise WorkspaceError(
                     f"{name}/{version} was recorded at another commit while this "
@@ -1456,16 +1470,41 @@ class _Publishing:
     def _restore_quietly(
         self, name: str, version: str, token: str, row: dict[str, Any]
     ) -> None:
-        """Put back the record an unpublish took out, from a call whose
+        """Put back the version an unpublish took out, from a call whose
         removal failed, and give back its reservation with it.
 
-        Whatever the removal got through, the version is published again
-        rather than dropped from every listing with its tag or branch
-        still on the store, and the failed call's own error is the one
-        it raises. A publication the removal left with no versions points
-        at this one again. A reservation another call has taken over is
-        that call's, and is left alone.
+        A version whose branch is still at the commit its record names
+        is put back whole: its tag is minted again if the removal took
+        it, and its record goes back, so it is published again rather
+        than dropped from every listing with its state still on the
+        store. A publication the removal left with no versions points at
+        it again. One whose branch already went cannot be opened, and
+        is not put back: what failed came after it was gone, and only
+        the reservation is given back. Either way the failed call's own
+        error is the one it raises, and a reservation another call has
+        taken over is that call's, and is left alone.
         """
+        ref = Ref.parse(row["ref"])
+        try:
+            head, info = self._branch_head(ref.session)
+            whole = head == ref.commit
+            if whole:
+                with self._repo() as repo:
+                    whole = self._mint_tag(
+                        repo,
+                        ref.session,
+                        row.get("tag") or f"{name}/{version}",
+                        ref.commit,
+                        info or {},
+                    )
+        except Exception:
+            _logger.warning(
+                "Could not check what is left of %s/%s", name, version, exc_info=True
+            )
+            whole = False
+        if not whole:
+            self._release_quietly(name, version, token)
+            return
 
         def restore(registry: dict[str, Any]) -> None:
             record = registry.get(name)

@@ -447,6 +447,130 @@ def test_a_leftover_from_another_root_is_not_adopted(hosts, monkeypatch):
     at_b.close()
 
 
+def test_a_shared_publish_still_moves_the_pointer_it_was_asked_to(hosts):
+    """Two attempts of one publish share its reservation. The one asked
+    to leave the pointer alone may record first; the one asked to move
+    it still moves it."""
+    a, b = hosts
+    with _draft(a, "one", "first") as ws:
+        a.publish(ws, "demo")
+        ws.files.write(PAGE, "second")
+        ws.commit()
+    entered, release = _pause(a, "_record_version")
+    done = {}
+    with a.open("one") as ws:
+        promoting = threading.Thread(
+            target=lambda: done.setdefault("pub", a.publish(ws, "demo"))
+        )
+        promoting.start()
+        try:
+            assert entered.wait(timeout=10)
+            with b.open("one") as same:
+                quiet = b.publish(same, "demo", current=False)
+            assert quiet.current == "v1"
+        finally:
+            release.set()
+            promoting.join(timeout=10)
+    assert done["pub"].current == "v2"
+    assert b.publication("demo").current == "v2"
+    assert [v.version for v in b.publication("demo").versions] == ["v1", "v2"]
+
+
+def test_a_named_version_is_not_resumed_by_a_publish_naming_none(hosts):
+    """A publish that names no version takes the next free one, past
+    every version held or reserved, even beside an attempt of the same
+    tree that named its own: it never takes that attempt's over."""
+    a, b = hosts
+    entered, release = _pause(a, "_record_version")
+    done = {}
+    ws = _draft(a, "one", "page")
+    named = threading.Thread(
+        target=lambda: done.setdefault("pub", a.publish(ws, "demo", version="v99"))
+    )
+    named.start()
+    try:
+        assert entered.wait(timeout=10)
+        with b.open("one") as same:
+            assert b.publish(same, "demo").current_version.version == "v100"
+    finally:
+        release.set()
+        named.join(timeout=10)
+    ws.close()
+    assert [v.version for v in b.publication("demo").versions] == ["v99", "v100"]
+
+
+def test_a_failed_removal_that_took_the_branch_is_not_put_back(hosts, monkeypatch):
+    """Once the branch is gone the version cannot be opened, so a
+    failure after it (the sweep, say) leaves it unpublished rather than
+    listed and broken."""
+    a, b = hosts
+    with _draft(a, "one", "page") as ws:
+        a.publish(ws, "demo")
+    real = a._remove_version_state
+
+    def then_fails(*args, **kwargs):
+        real(*args, **kwargs)
+        raise RuntimeError("the sweep after the branch failed")
+
+    monkeypatch.setattr(a, "_remove_version_state", then_fails)
+    with pytest.raises(RuntimeError):
+        a.unpublish("demo", "v1", min_age=0)
+    assert b.publication("demo") is None
+    assert a._registry_read() == {}
+    assert "demo/v1" not in b.tags.list()
+
+
+def test_a_failed_removal_that_took_only_the_tag_puts_it_back(hosts, monkeypatch):
+    """The tag goes before the branch. A removal that fails between
+    them leaves the branch, so the version goes back whole, its tag
+    minted again."""
+    a, b = hosts
+    with _draft(a, "one", "page") as ws:
+        version = a.publish(ws, "demo").current_version
+
+    def tag_only(tag, branch, *, min_age):
+        a._delete_store_tag(tag)
+        raise RuntimeError("the branch deletion failed")
+
+    monkeypatch.setattr(a, "_remove_version_state", tag_only)
+    with pytest.raises(RuntimeError):
+        a.unpublish("demo", "v1", min_age=0)
+    assert b.tags.list()["demo/v1"] == version.ref.commit
+    assert b.publication("demo").current_version.ref == version.ref
+    assert _read(b, version.ref) == b"page"
+
+
+def test_a_short_ref_racing_an_unpublish_says_so(hosts, monkeypatch):
+    """Expanding a short id walks the version's branch, which an
+    unpublish may take mid-walk: that reads as the unpublish. A version
+    still published keeps the expansion's own error."""
+    from kvgit import UnknownBranchError
+
+    from nontainer.errors import CommitNotFoundError
+    from nontainer.store import Ref
+
+    a, b = hosts
+    with _draft(a, "one", "page") as ws:
+        version = a.publish(ws, "demo").current_version
+    short = Ref(version.ref.session, version.ref.commit[:7])
+    assert _read(a, short) == b"page"
+
+    def not_found(ref):
+        raise CommitNotFoundError("no such commit on that line")
+
+    monkeypatch.setattr(a, "_expanded_ref", not_found)
+    with pytest.raises(CommitNotFoundError, match="no such commit"):
+        a.resolve(short)
+
+    def walked_into_it(ref):
+        b.unpublish("demo", "v1", min_age=0)
+        raise UnknownBranchError(version.ref.session)
+
+    monkeypatch.setattr(a, "_expanded_ref", walked_into_it)
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        a.resolve(short)
+
+
 # -- the registry file earlier releases kept ---------------------------------
 
 
