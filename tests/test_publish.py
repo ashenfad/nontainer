@@ -1179,15 +1179,19 @@ def test_an_unreadable_registry_says_so(tmp_path):
     ws.close()
 
 
-def test_an_unreadable_legacy_registry_file_says_so(tmp_path):
-    """A file an earlier release kept is imported on first use, and one
-    that does not parse is refused rather than read as nothing."""
+def test_an_unreadable_legacy_registry_file_says_so(tmp_path, caplog):
+    """A file an earlier release kept is imported on first use. One that
+    does not parse is logged there and the read goes on, and the
+    explicit import refuses it."""
     store = Store(tmp_path)
     ws = seeded(store)
     ws.close()
     (tmp_path / "publications.json").write_text("{not json")
+    with caplog.at_level("WARNING", logger="nontainer.store"):
+        assert Store(tmp_path).publications() == {}
+    assert "publications.json" in caplog.text
     with pytest.raises(WorkspaceError, match="unreadable"):
-        Store(tmp_path).publications()
+        Store(tmp_path).import_registry()
 
 
 # -- concurrent publishing ---------------------------------------------------

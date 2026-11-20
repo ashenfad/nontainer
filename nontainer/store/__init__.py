@@ -13,6 +13,7 @@ from .layout import _FROZEN_SETTINGS, KV_ENV, KV_TABLE_ENV, Backend
 from .publications import (
     _DEFAULT_PUBLISH_EXCLUDE,
     Publication,
+    RegistryImport,
     Version,
     _is_publish_attempt,
     _published_rows,
@@ -34,6 +35,7 @@ __all__ = [
     "FileChange",
     "Publication",
     "Ref",
+    "RegistryImport",
     "StateChanges",
     "Store",
     "StoreTags",

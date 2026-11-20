@@ -644,3 +644,112 @@ def test_an_imported_record_the_store_no_longer_backs_is_skipped(tmp_path, caplo
         assert list(reopened.publications()) == ["kept"]
     assert "gone/v1" in caplog.text
     reopened.close()
+
+
+def _legacy_store(tmp_path):
+    """A store as 0.13 left it: one published version, its registry in
+    publications.json. Returns the store directory."""
+    path = tmp_path / "store"
+    store = Store(path)
+    with _draft(store, "one", "page") as ws:
+        store.publish(ws, "demo")
+    _as_legacy_file(store, path / "publications.json")
+    store.close()
+    return path
+
+
+def test_a_host_that_cannot_write_its_directory_still_reads(tmp_path, caplog):
+    """A host that only serves may not own its store directory. The
+    import still lands in the backend; the file can't be renamed, which
+    is logged, and reads go on."""
+    import os
+    import stat
+
+    path = _legacy_store(tmp_path)
+    os.chmod(path, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        store = Store(path)
+        with caplog.at_level("WARNING", logger="nontainer.store"):
+            assert list(store.publications()) == ["demo"]
+            assert list(store.publications()) == ["demo"]
+        assert "could not rename" in caplog.text
+        assert (path / "publications.json").is_file()
+        store.close()
+    finally:
+        os.chmod(path, stat.S_IRWXU)
+
+
+def test_a_host_whose_writes_are_refused_still_reads(tmp_path, monkeypatch, caplog):
+    """A read-only database role refuses the import's write: logged, the
+    read goes on with the shared registry, and the file stays for a
+    process that can write. The explicit import says why."""
+    path = _legacy_store(tmp_path)
+    store = Store(path)
+
+    def refused(*args, **kwargs):
+        raise PermissionError("permission denied for table kvgit")
+
+    monkeypatch.setattr(store, "_registry_put", refused)
+    with caplog.at_level("WARNING", logger="nontainer.store"):
+        assert store.publications() == {}
+    assert "import_registry" in caplog.text
+    assert (path / "publications.json").is_file()
+    with pytest.raises(PermissionError):
+        store.import_registry()
+    monkeypatch.undo()
+
+    report = store.import_registry()
+    assert report.imported == ("demo/v1",)
+    assert report.renamed
+    assert list(store.publications()) == ["demo"]
+    store.close()
+
+
+def test_a_retired_hosts_file_is_imported_from_anywhere(tmp_path):
+    """A host that never runs 0.14 never imports its own file. Copied
+    anywhere, it is imported by name, and left where it is."""
+    kv = Memory()
+    a = Store(tmp_path / "a", kv=kv)
+    with _draft(a, "one", "page") as ws:
+        a.publish(ws, "kept")
+        a.publish(ws, "retired")
+    registry = a._registry_read()
+    a.repo.store.set(
+        "__nontainer_publications__",
+        json.dumps({"kept": registry["kept"]}).encode(),
+    )
+    copied = tmp_path / "from-the-old-host.json"
+    copied.write_text(json.dumps({"retired": registry["retired"]}))
+
+    assert list(a.publications()) == ["kept"]
+    report = a.import_registry(copied)
+    assert (report.imported, report.present, report.skipped) == (
+        ("retired/v1",),
+        (),
+        (),
+    )
+    assert not report.renamed and copied.is_file()
+    assert list(a.publications()) == ["kept", "retired"]
+    again = a.import_registry(copied)
+    assert (again.imported, again.present) == ((), ("retired/v1",))
+    a.close()
+
+
+def test_the_report_names_what_the_store_no_longer_backs(tmp_path):
+    path = _legacy_store(tmp_path)
+    store = Store(path)
+    store.tags.delete("demo/v1")
+    report = store.import_registry()
+    assert report.skipped == ("demo/v1",) and report.imported == ()
+    store.close()
+
+
+def test_importing_the_own_file_again_points_at_the_renamed_one(tmp_path):
+    path = _legacy_store(tmp_path)
+    store = Store(path)
+    assert list(store.publications()) == ["demo"]  # the automatic import
+    with pytest.raises(FileNotFoundError, match="imported already"):
+        store.import_registry()
+    report = store.import_registry(path / "publications.json.imported")
+    assert report.present == ("demo/v1",) and report.imported == ()
+    store.close()

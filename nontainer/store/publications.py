@@ -370,6 +370,25 @@ class Publication:
         return self.store._open_publication(target, **settings)
 
 
+@dataclass(frozen=True)
+class RegistryImport:
+    """What :meth:`Store.import_registry` did with one registry file.
+
+    Each version is spelled ``name/version``. ``imported`` went into the
+    shared registry; ``present`` was there already (or reserved there),
+    and the registry's record stood; ``skipped`` names a version whose
+    store tag no longer names the commit its record names, so nothing
+    could serve it. ``renamed`` says whether the file was renamed
+    ``<name>.imported``, which only this store's own file is.
+    """
+
+    source: Path
+    imported: tuple[str, ...] = ()
+    present: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+    renamed: bool = False
+
+
 def _as_json_value(value: Any) -> Any:
     """What ``json.dumps`` should make of a value it does not know.
 
@@ -998,6 +1017,65 @@ class _Publishing:
             raise
         self._release(name, version, token)
 
+    def import_registry(self, path: "str | Path | None" = None) -> RegistryImport:
+        """Import a publication registry file an earlier release kept,
+        merging its records into the shared registry; returns what came
+        of each version (:class:`RegistryImport`).
+
+        nontainer 0.13 and earlier kept the registry in
+        ``publications.json`` in each host's store directory. Every
+        ``Store`` imports its own the first time it reads or changes the
+        registry, so upgrading needs no step of its own. This is the
+        same import, asked for: to import a file from anywhere (a retired
+        host's, copied over), to retry one that could not be imported
+        where it was found, or to see what an import did. ``path``
+        defaults to this store's own file.
+
+        Records merge into what the shared registry holds and never over
+        it: a version the registry already has, or holds a reservation
+        for, keeps what the registry says and is reported ``present``.
+        A version whose store tag no longer names the commit its record
+        names was unpublished, or published over, elsewhere since, and
+        is reported ``skipped`` rather than imported. Importing a file
+        twice imports nothing the second time, so it is always safe to
+        run again.
+
+        This store's own ``publications.json`` is renamed
+        ``publications.json.imported`` once imported, as the automatic
+        import renames it; a file named by ``path`` is left as it is.
+        Where the rename fails the import still stands, and
+        ``renamed`` says so.
+
+        Unlike the automatic import, this raises: ``FileNotFoundError``
+        for no such file (the message says if this store's own was
+        imported already), :class:`~nontainer.errors.WorkspaceError` for
+        one that is not a registry, and the backend's own error for a
+        write it refuses.
+        """
+        self._require_own_layout("import_registry")
+        self._require_kvgit("import_registry")
+        own = self._legacy_registry_path()
+        source = Path(path).expanduser() if path is not None else own
+        if source is None:
+            raise FileNotFoundError(
+                f"{self!r} has no directory of its own, so it has no registry "
+                "file to import: name one with path="
+            )
+        if not source.is_file():
+            hint = ""
+            done = source.with_name(source.name + _IMPORTED_SUFFIX)
+            if source == own and done.is_file():
+                hint = (
+                    f" It was imported already, and renamed {done.name}; pass "
+                    "that path to import it again."
+                )
+            raise FileNotFoundError(f"No registry file at {source}.{hint}")
+        self._kvgit_repo(create=True)
+        report = self._import_file(source, rename=source == own)
+        if source == own:
+            self._registry_imported = True
+        return report
+
     # -- the publication registry ----------------------------------------
     #
     # The immutable half of a publication is a tag and a branch; this is
@@ -1109,24 +1187,17 @@ class _Publishing:
         )
 
     def _import_legacy_registry(self) -> None:
-        """Fold a registry file an earlier release kept into the shared
-        registry, once per store object.
+        """Import this store's own registry file, from a release before
+        the shared registry, the first time this store object reads or
+        changes the registry (see :meth:`import_registry`).
 
-        Each host sharing a backend kept a file of its own, so each one
-        imports its own: the file's records are merged into whatever the
-        shared registry already holds, never written over it. A version
-        the shared registry already has, or holds a reservation for,
-        keeps what the registry says. A version whose store tag does not
-        name the commit its record names is not imported: the tag and
-        the branch are shared, and a record they no longer back is one
-        an unpublish on another host already removed, or one written
-        over a version some other host published since. Those are
-        logged rather than raised, since nothing can serve them.
-
-        The file is then renamed ``publications.json.imported``, so it
-        stays readable by hand and is not imported again. A store with
-        no kvgit repository yet has nothing a record could name, and is
-        left alone.
+        It is attempted once per store object and never fails the call
+        that triggered it: a process that can read the store but not
+        write it (a directory or a database role that is read-only, as a
+        host that only serves can be) logs why and goes on with the
+        shared registry as it is, leaving the file for a process that
+        can. A store with no kvgit repository yet has nothing a record
+        could name, and is left alone until it has one.
         """
         if self._registry_imported:
             return
@@ -1136,31 +1207,50 @@ class _Publishing:
             return
         if self._kvgit_repo() is None:
             return
+        self._registry_imported = True
+        try:
+            self._import_file(path, rename=True)
+        except FileNotFoundError:
+            pass  # another handle on this directory imported it first
+        except Exception:  # noqa: BLE001 - a read must not fail for an import
+            _logger.warning(
+                "Could not import the publication registry file %s, which an "
+                "earlier release kept; going on with the shared registry. "
+                "store.import_registry() imports it, and says why it can't.",
+                path,
+                exc_info=True,
+            )
+
+    def _import_file(self, path: Path, *, rename: bool) -> RegistryImport:
+        """Merge one registry file into the shared registry, and rename it
+        if asked; the work behind :meth:`import_registry` and the
+        automatic import."""
         try:
             data = json.loads(path.read_text())
         except FileNotFoundError:
-            # Another handle on this directory imported it first.
-            self._registry_imported = True
-            return
+            raise
         except (OSError, ValueError) as e:
             raise WorkspaceError(
-                f"Publication registry is unreadable: {path} ({e}). An "
-                "earlier release kept the registry in this file, and its "
-                "records are imported into the store once it reads. The "
+                f"Publication registry file is unreadable: {path} ({e}). An "
+                "earlier release kept the registry in this file. The "
                 "publications themselves are tags and branches on the store "
                 "and are still there."
             ) from e
         records = data if isinstance(data, dict) else {}
-        backed, dropped = self._backed_versions(records)
-        if dropped:
+        backed, skipped = self._backed_versions(records)
+        if skipped:
             _logger.warning(
                 "Not importing %s from %s: the store's tags no longer name "
                 "the commits those records name.",
-                ", ".join(dropped),
+                ", ".join(skipped),
                 path,
             )
+        imported: list[str] = []
+        present: list[str] = []
 
         def merge(registry: dict[str, Any]) -> None:
+            imported.clear()
+            present.clear()
             for name, record in records.items():
                 rows = {
                     v: row
@@ -1172,11 +1262,13 @@ class _Publishing:
                 shared = dict(registry.get(name) or {})
                 versions = dict(shared.get("versions") or {})
                 pending = shared.get("pending") or {}
-                added = {
-                    v: row
-                    for v, row in rows.items()
-                    if v not in versions and v not in pending
-                }
+                added = {}
+                for v, row in rows.items():
+                    if v in versions or v in pending:
+                        present.append(f"{name}/{v}")
+                    else:
+                        added[v] = row
+                        imported.append(f"{name}/{v}")
                 if not added:
                     continue
                 versions.update(added)
@@ -1193,11 +1285,27 @@ class _Publishing:
                 registry[name] = shared
 
         self._change_registry(merge)
-        try:
-            os.replace(path, path.with_name(path.name + _IMPORTED_SUFFIX))
-        except FileNotFoundError:
-            pass  # another handle on this directory imported it first
-        self._registry_imported = True
+        renamed = False
+        if rename:
+            try:
+                os.replace(path, path.with_name(path.name + _IMPORTED_SUFFIX))
+                renamed = True
+            except FileNotFoundError:
+                pass  # another handle on this directory imported it first
+            except OSError:
+                _logger.warning(
+                    "Imported %s but could not rename it; importing it again "
+                    "imports nothing new.",
+                    path,
+                    exc_info=True,
+                )
+        return RegistryImport(
+            source=path,
+            imported=tuple(sorted(imported)),
+            present=tuple(sorted(present)),
+            skipped=tuple(sorted(skipped)),
+            renamed=renamed,
+        )
 
     def _backed_versions(
         self, records: Mapping[str, Any]

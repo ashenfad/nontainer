@@ -8,11 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **`store.import_registry(path=None)` imports a registry file 0.13 kept, from any path** (#155). Use it for a retired host's file, or to retry an import; it returns what it imported, found present and skipped.
 - **`store.changes(base, theirs)` describes the change `ws.land` would apply, without applying it** (#328). Files and directories, cache sets and deletes, the cwd and the bookkeeping that differs, with `max_entries` and `max_bytes` checked before anything is read.
 - **`store.scratch(ref, name, **open_kwargs)` creates a writable session at the exact commit a ref names** (#327). Its head is that commit, opening it writes nothing, and its first commit's only parent is that commit, so `ws.land` takes the work back.
 
 ### Changed
-- **Storage: the publication registry is kept in the store's kvgit backend, shared by every host on it** (#155). Each change is a compare-and-swap, and a store's `publications.json` is merged in on first use, then renamed `publications.json.imported`.
+- **Storage: the publication registry is kept in the store's kvgit backend, shared by every host on it** (#155). Each host's `publications.json` is merged in on its first use and renamed `.imported`; 0.13 and earlier no longer see the registry.
 
 ### Fixed
 - **A version published on one host lists, opens and resolves on the others** (#155). A second host's `store.resolve(version.ref)` raised "No longer published".
