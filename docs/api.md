@@ -522,7 +522,9 @@ One publish writes three things:
   or clears what it has written: an explicit `version=` it holds is
   refused, and the next `v<N>` skips it. `unpublish` works the same way
   round. It takes the record out as a reservation of its own, removes
-  the tag and the branch, then gives the reservation back.
+  the tag and the branch, then gives the reservation back. If the
+  removal fails, the record goes back too, so a failed unpublish leaves
+  the version published and calling it again finishes the job.
 
   A process that dies mid-publish leaves its reservation, a branch,
   and usually its tag. Publishing the same thing again adopts them: the
@@ -531,11 +533,13 @@ One publish writes three things:
   version, one branch, no duplicate. That holds while the first attempt
   is still running, too, on another host: the branch's own
   compare-and-swap lands one commit, and the other attempt adopts it.
-  A publish of anything else under that version is refused by name.
-  `unpublish` clears what the dead attempt left once its reservation is
-  older than `min_age` (an hour by default; `min_age=0` for one known to
-  be dead), since age is all that tells a slow publish on another host
-  from a dead one. The record describes the commit that was adopted,
+  A publish of anything else under that version is refused by name,
+  and so is one from another workspace root, since relative `paths`
+  name another tree there. `unpublish` clears what the dead attempt
+  left once its reservation is older than `min_age` (an hour by
+  default; `min_age=0` for one known to be dead), since age is all that
+  tells a slow call on another host from a dead one. Another
+  unpublish's reservation is taken over on the same terms. The record describes the commit that was adopted,
   not the call that adopted it: an adopted commit is immutable, so its
   `info` and `paths` are what the row and a late-minted tag carry, and
   the retry's own `info` lands nowhere.
@@ -593,9 +597,9 @@ first — or publishing with `current=False`, which never takes it. The
 last version of a publication may go however it is pointed at, and
 takes the publication's record with it. A version with no record but a
 branch or a tag of its name is cleared the same way, so an operator can
-free the name a publish that died mid-way left reserved. A publish
-still holding its reservation, on this host or another, is left alone
-until the reservation is older than `min_age`. Only what publish itself
+free the name a publish that died mid-way left reserved. A publish or
+an unpublish still holding its reservation, on this host or another, is
+left alone until the reservation is older than `min_age`. Only what publish itself
 wrote is cleared: a store tag may hold a slash, so `release/prod`
 answers to `unpublish("release", "prod")` by name alone, and a tag or
 branch whose info does not carry publish's provenance (`tool`, `name`,
