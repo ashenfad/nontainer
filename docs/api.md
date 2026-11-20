@@ -409,6 +409,7 @@ store.publication(name) -> Publication | None
 store.set_current(name, version) -> Publication
 store.set_meta(name, mapping) -> Publication           # replaces meta whole
 store.unpublish(name, version, *, min_age=3600) -> None
+store.import_registry(path=None) -> RegistryImport     # a 0.13 registry file
 
 Publication: .name, .versions -> tuple[Version, ...], .current
              .meta -> Mapping[str, Any]      # the publication's own metadata
@@ -584,15 +585,38 @@ One publish writes three things:
   `info` and `paths` are what the row and a late-minted tag carry, and
   the retry's own `info` lands nowhere.
 
-  A store written by nontainer 0.13 or earlier kept the registry in
-  `publications.json` under the store path, one file per host. The
-  first `Store` to read the registry imports its own file, merging its
-  records into the shared registry rather than writing over it, and
-  renames the file `publications.json.imported`. So every host's file
-  is imported, each on that host's first use. A record whose store tag
-  no longer names its commit is not imported, since the shared tags say
-  that version was unpublished or written over elsewhere. It is logged
-  instead.
+  **Upgrading from 0.13.** nontainer 0.13 and earlier kept the registry
+  in `publications.json` under the store path, one file per host, and
+  no longer see the registry once 0.14 runs. Upgrading needs no step of
+  its own: the first time a 0.14 `Store` reads or changes the registry,
+  it imports its own file. The records are merged into the shared
+  registry rather than written over it, and the file is renamed
+  `publications.json.imported`, so each host's file is imported on that
+  host's first use. A record whose store tag no longer names its commit
+  is not imported, since the shared tags say that version was
+  unpublished or published over elsewhere. It is logged instead.
+
+  The automatic import never fails the read that triggered it. A
+  process that can read the store but not write it (a read-only
+  directory, a read-only database role) logs why, goes on with the
+  shared registry, and leaves the file for a process that can write.
+  It is attempted once per `Store` object.
+
+  `store.import_registry(path=None)` is the same import, asked for. Use
+  it to import a file from anywhere, such as a retired host's that will
+  never run 0.14, copied over; to retry one that couldn't be imported
+  where it lies; or to see what an import did. It raises where the
+  automatic import logs. It returns a `RegistryImport`: `imported`,
+  `present` (already in the registry, which stood) and `skipped`, each
+  as `name/version`, plus `source` and `renamed`. Only the store's own
+  file is renamed. Importing a file twice imports nothing new, so it is
+  safe to run again.
+
+  ```python
+  with Store(path, kv=url) as store:
+      report = store.import_registry("/srv/old-host/publications.json")
+      print(report.imported, report.skipped)
+  ```
 
 A `Publication` is a **snapshot of the registry**, not a capability:
 `open()` re-reads it and refuses a version that has since been
