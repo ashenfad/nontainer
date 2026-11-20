@@ -83,8 +83,9 @@ class Store(_Publishing):
             the backend once, on first use, and every session and verb
             shares it. :meth:`close` closes a backend the store built
             (from a URL, or on disk); a ``KVStore`` passed here stays
-            yours to close. ``path`` still holds the publication
-            registry.
+            yours to close. The publication registry is kept in that
+            backend too, so every process and host sharing it shares
+            the registry.
         provider_factory: Bring your own substrate — a callable taking
             a session id and returning a
             :class:`~nontainer.protocol.WorkspaceProvider`. When given
@@ -177,15 +178,19 @@ class Store(_Publishing):
         # a URL, or on disk) and so closes it. A KVStore handed in as
         # ``kv=`` stays the caller's.
         self._owns_backend = False
-        # The publication registry for a store that has no directory of
-        # its own: a provider_factory decides where state lives, and a
-        # memory store has no directory, so there is nowhere to put the
-        # file. It then lives for as long as this Store object does.
-        # Every other store keeps it in ``<path>/publications.json``.
-        self._memory_registry: dict[str, Any] = {}
-        # ...and since nothing else can reach that dict, its
-        # read-modify-write serializes on a lock of this object's own.
+        # The publication registry's stored bytes for a provider_factory
+        # store, which has no backend of its own to keep it in: it lives
+        # for as long as this Store object does. Every other kvgit store
+        # keeps it in its backend, beside the branches and tags it
+        # indexes (see _REGISTRY_KEY).
+        self._memory_registry: bytes | None = None
+        # ...and since nothing else can reach those bytes, the
+        # compare-and-swap on them is a lock of this object's own.
         self._memory_registry_lock = threading.Lock()
+        # Whether a registry file an earlier release kept in ``path``
+        # has been looked for and imported (see
+        # _import_legacy_registry).
+        self._registry_imported = False
 
     # ------------------------------------------------------------------
     # identity
@@ -641,8 +646,10 @@ class Store(_Publishing):
         # deliberately not a session and never appears in sessions().
         # The registry is what says whether that version is still
         # published; the branch outliving it would not make it servable
-        # again. The check and the open share the registry lock, so an
-        # unpublish cannot land between them. The workspace is built
+        # again. The open is by commit and creates no branch, so an
+        # unpublish landing between the check and the open leaves
+        # nothing behind, and one that takes the branch first is
+        # reported as the unpublish it is. The workspace is built
         # after: it holds a handle checked out at the commit, which is
         # pinned by the version's tag for the sweep's grace period and
         # names no branch, so nothing it does later can mint one.
@@ -786,36 +793,43 @@ class Store(_Publishing):
 
     @contextmanager
     def _ref_source_held(self, ref: Ref, op: str) -> "Iterator[Ref]":
-        """Check the source a ref names, hold it still for the body, and
-        hand the body that ref with its commit spelled whole.
+        """Check the source a ref names and hand the body that ref with
+        its commit spelled whole.
 
-        A publication's reserved branch is checked under the registry
-        lock, and the caller opens it in the body, so the check and
-        the open are one critical section. ``unpublish`` deletes the
-        row, the tag and the branch under that same lock; a check that
-        passed and an open that followed on either side of it would
-        mint the reserved branch again, because kvgit creates a branch
-        opened by a name it does not know — and a reserved branch no
-        record names refuses to let that version be published again.
+        A publication's reserved branch is checked against the shared
+        registry: one read, on whichever host the ref is resolved, and
+        no lock. Nothing the body does with a publication's branch can
+        create it again once an unpublish has deleted it, since every
+        open of one is by commit or refuses a branch that is not there,
+        so an unpublish landing between the check and the body leaves
+        nothing behind; the version reads for as long as one opened
+        just before that unpublish would.
 
-        The expansion comes first, and for a publication inside that
-        same lock: a ref carries what a caller was shown, which may be
-        seven characters of a commit id, while the registry holds whole
-        ones — an exact comparison made before the expansion reads a
-        published version as unpublished.
+        The expansion comes first: a ref carries what a caller was
+        shown, which may be seven characters of a commit id, while the
+        registry holds whole ones — an exact comparison made before the
+        expansion reads a published version as unpublished.
 
-        A ref naming a session takes no lock: a session's branch is
-        not the registry's to remove.
+        A ref naming a session is not checked against the registry: a
+        session's branch is not the registry's to remove.
         """
         if not self._is_publication_branch(ref.session):
             yield self._expanded_ref(ref)
             return
         self._require_own_layout(op)
         self._require_kvgit(op)
-        with self._registry_locked():
-            whole = self._expanded_ref(ref)
-            self._require_registered(whole)
+        whole = self._expanded_ref(ref)
+        self._require_registered(whole)
+        from kvgit import KvgitError
+
+        try:
             yield whole
+        except (WorkspaceError, KvgitError):
+            # An unpublish that landed after the check takes the
+            # version's branch, and soon its commit: that says why the
+            # body failed better than a missing branch does.
+            self._require_registered(whole)
+            raise
 
     def _expanded_ref(self, ref: Ref) -> Ref:
         """A ref whose commit is spelled in full.
@@ -857,9 +871,10 @@ class Store(_Publishing):
         commits of its own — which is all a caller naming a commit by
         id needs.
 
-        A context manager because a publication's source is held still
-        for as long as the body runs: whatever the body does with the
-        handle happens on a version the registry still holds.
+        A publication's branch is opened without creating it, so a
+        version unpublished after the check refuses here rather than
+        coming back as an empty branch no record names, which would
+        block publishing that version again.
         """
         with self._ref_source_held(ref, op) as source:
             if not self._is_publication_branch(source.session):
@@ -872,10 +887,18 @@ class Store(_Publishing):
                 yield provider, source
                 return
             self._require_branch(source.session, op)
+            from kvgit import UnknownBranchError
+
             from ..providers.kvgit import KvgitProvider
 
+            repo = self._kvgit_repo(create=True)
+            try:
+                worktree = repo.worktree(source.session)
+            except UnknownBranchError:
+                self._require_branch(source.session, op)  # raises, naming it
+                raise
             yield (
-                KvgitProvider.on(self._kvgit_repo(create=True), source.session),
+                KvgitProvider(repo, worktree, session=source.session, owns_repo=False),
                 source,
             )
 

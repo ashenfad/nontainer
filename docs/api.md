@@ -102,8 +102,9 @@ PostgreSQL store is shared by every process pointed at it, and any
 number of them may commit and sweep at once. The store opens its
 backend once, on first use, and every session and verb shares that one
 repository — one connection pool, not one per call; `store.repo` is
-that repository. `path` still holds the publication registry
-(`publications.json`), which is a file on that machine.
+that repository. The publication registry is kept in that backend
+too, so every process and host pointed at it reads and writes one
+registry.
 `provider_factory` replaces all of that for `open` (bring your own
 substrate); the store-level verbs then refuse, because the layout is
 the factory's and guessing it would be worse than saying so.
@@ -458,7 +459,8 @@ holds, a publication name that already holds a version under
 name is unknown or whose value is not a JSON-serializable mapping. An
 embedder mapping errors to HTTP answers 400 to all of them. A **`WorkspaceError`** is the
 store's state: a session with staged changes, a leftover tag or branch,
-a version unpublished since the `Publication` was fetched. A
+a version another call holds a reservation on, a version unpublished
+since the `Publication` was fetched. A
 **`NotSupportedError`** (a `WorkspaceError`) says this store cannot
 publish at all — no branches and tags under it, or a `provider_factory`
 layout it does not own.
@@ -474,10 +476,13 @@ One publish writes three things:
   legal `Ref` target, so `store.resolve(str(version.ref))` opens it and
   `store.tags.add(version.ref, name)` names its commit.
 - a store-scoped tag `<name>/<version>` naming that commit.
-- a record in the **publication registry**, `publications.json` under
-  the store path, written atomically (write-then-rename). A store with
-  no directory of its own (`provider_factory`, or `memory=True`) keeps it in memory for
-  the life of the `Store`. Its shape:
+- a record in the **publication registry**, one JSON value kept in
+  the store's own kvgit backend under the key
+  `__nontainer_publications__`, beside the branches and tags it
+  indexes. On PostgreSQL every host on the store shares it. A memory
+  store keeps it in its in-memory backend, and a `provider_factory`
+  store, which has no backend of its own, on the `Store` object. Read
+  it with `store.publications()`. Its shape:
 
   ```json
   {
@@ -503,26 +508,47 @@ One publish writes three things:
   embedder serving a publication keeps those in its own table keyed by
   name — see `docs/apps.md`.
 
-  The record is the last of the three to land, so a process that dies
-  mid-publish leaves a branch, and usually its tag, that no record
-  names. Publishing the same thing again adopts it: a recordless
-  branch whose head commit names the same source commit and the same
-  `paths` was written by that attempt and no other, so its commit
-  becomes this publish's and the record is written over it — one
-  version, one branch, no duplicate. A recordless branch of some other
-  attempt is refused by name, and `unpublish` clears it. The record
-  describes the commit that was adopted, not the call that adopted it:
-  an adopted commit is immutable, so its `info` and `paths` are what
-  the row and a late-minted tag carry, and the retry's own `info`
-  lands nowhere.
+  Every change to the registry is a read, a decision and a
+  compare-and-swap that expects the bytes it read, retried when
+  another writer got there first. So two publishers, on one host or
+  two, never pick the same version number or drop each other's record,
+  and no lock spans hosts.
 
-  Every mutation reads, decides and writes under one lock — a
-  `flock` on `publications.lock` beside the registry for other
-  processes, and a per-path `threading.Lock` for this one's threads —
-  so two publishers cannot pick the same version number or drop each
-  other's record. On a platform without `fcntl` the in-process lock is
-  the whole guarantee, and two processes publishing to one store can
-  still lose a record.
+  A publish first **reserves** its version in the registry, under the
+  publication's `pending` entries, then writes the branch and the tag,
+  and last turns the reservation into the record. A reserved version is
+  published nowhere yet: no listing shows it and no ref resolves to it.
+  While a call holds the reservation, no other call claims that version
+  or clears what it has written: an explicit `version=` it holds is
+  refused, and the next `v<N>` skips it. `unpublish` works the same way
+  round. It takes the record out as a reservation of its own, removes
+  the tag and the branch, then gives the reservation back.
+
+  A process that dies mid-publish leaves its reservation, a branch,
+  and usually its tag. Publishing the same thing again adopts them: the
+  same source commit, `paths` and `exclude` write the same tree, so the
+  commit becomes this publish's and the record is written over it, one
+  version, one branch, no duplicate. That holds while the first attempt
+  is still running, too, on another host: the branch's own
+  compare-and-swap lands one commit, and the other attempt adopts it.
+  A publish of anything else under that version is refused by name.
+  `unpublish` clears what the dead attempt left once its reservation is
+  older than `min_age` (an hour by default; `min_age=0` for one known to
+  be dead), since age is all that tells a slow publish on another host
+  from a dead one. The record describes the commit that was adopted,
+  not the call that adopted it: an adopted commit is immutable, so its
+  `info` and `paths` are what the row and a late-minted tag carry, and
+  the retry's own `info` lands nowhere.
+
+  A store written by nontainer 0.13 or earlier kept the registry in
+  `publications.json` under the store path, one file per host. The
+  first `Store` to read the registry imports its own file, merging its
+  records into the shared registry rather than writing over it, and
+  renames the file `publications.json.imported`. So every host's file
+  is imported, each on that host's first use. A record whose store tag
+  no longer names its commit is not imported, since the shared tags say
+  that version was unpublished or written over elsewhere. It is logged
+  instead.
 
 A `Publication` is a **snapshot of the registry**, not a capability:
 `open()` re-reads it and refuses a version that has since been
@@ -541,7 +567,7 @@ changes about a published app without a release. Renaming an app from
 nothing is republished. `set_meta` replaces the mapping whole rather
 than merging, so dropping a key is spelled the same way as changing
 one, and `{}` clears it; values must be JSON-serializable, because the
-registry is a JSON file, and what lands is a copy, so editing a nested
+registry is stored as JSON, and what lands is a copy, so editing a nested
 list afterwards says nothing about the publication. A publication with none reads as an empty
 mapping, and so does a row written before the field existed.
 `publish` leaves `meta` where it is on an existing publication and
@@ -567,8 +593,10 @@ first — or publishing with `current=False`, which never takes it. The
 last version of a publication may go however it is pointed at, and
 takes the publication's record with it. A version with no record but a
 branch or a tag of its name is cleared the same way, so an operator can
-free the name a publish that died mid-way left reserved — but only what
-publish itself wrote: a store tag may hold a slash, so `release/prod`
+free the name a publish that died mid-way left reserved. A publish
+still holding its reservation, on this host or another, is left alone
+until the reservation is older than `min_age`. Only what publish itself
+wrote is cleared: a store tag may hold a slash, so `release/prod`
 answers to `unpublish("release", "prod")` by name alone, and a tag or
 branch whose info does not carry publish's provenance (`tool`, `name`,
 `version`, `published_from`, `paths`) is left where it is and the call
