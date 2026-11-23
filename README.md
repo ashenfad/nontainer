@@ -109,6 +109,7 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https:
 
 - [Design notes](docs/design.md) -- execution model, commit granularity, tool exposure, and what's still ahead
 - [Browser roadmap](docs/browser-roadmap.md) -- where browser-side serving and compute stand: what shipped, what is next, and the design behind both
+- [Notes and blame roadmap](docs/notes-roadmap.md) -- a sentence on each tool call saying why it changed the tree, and `ws-git blame` from a span of code to the call, the note and the conversation behind it
 - [Curation](docs/curation.md) -- agents learning from each other's sessions: traces as files, a wiki, skills that ship code, and a gate with no answer key
 - [Compaction](docs/compaction.md) -- keeping a long conversation inside the context window: older turns folded into one summary for the model, the full transcript kept; nontainer keeps the record of each fold, and each loop folds its own way
 
