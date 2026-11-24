@@ -570,6 +570,11 @@ class _TreeLedger:
     each time a sandbox is tracked or retired, so a long-lived executor
     serving many view calls does not keep every sandbox it ever built.
     :meth:`drain` waits for the rest.
+
+    Once :meth:`close` is called it takes no more sandboxes, so a drain
+    after it covers every sandbox the executor can still start a worker
+    on: one tracked in time is drained with the rest, and a drained
+    sandbox starts no worker.
     """
 
     def __init__(self) -> None:
@@ -581,11 +586,23 @@ class _TreeLedger:
         self._retired: list[Any] = []
         self._workers = self._helpers = self._killed = 0
         self._lost = False
+        self._closed = False
 
-    def track(self, sandbox: Any) -> None:
+    def track(self, sandbox: Any) -> bool:
+        """Account for a sandbox just built, before any worker starts on
+        it. False once the ledger is closed: the sandbox must not be
+        used, since no drain would cover it."""
         with self._lock:
+            if self._closed:
+                return False
             self._open.append(sandbox)
         self._settle_retired()
+        return True
+
+    def close(self) -> None:
+        """Take no more sandboxes."""
+        with self._lock:
+            self._closed = True
 
     def retire(self, sandbox: Any) -> None:
         """Note that nothing will execute on ``sandbox`` again; draining it
@@ -849,14 +866,20 @@ class _ViewWorkerPool:
                 raise _NotPoolable(sandbox)
             enter()
         except _NotPoolable as unpoolable:
-            with self._lock:
-                self._live[key] -= 1
+            self._unreserve(key)
             return unpoolable.sandbox, False
         except BaseException:
-            with self._lock:
-                self._live[key] -= 1
+            self._unreserve(key)
             raise
         return sandbox, True
+
+    def _unreserve(self, key: tuple) -> None:
+        """Give back a slot reserved under ``key``. A :meth:`close` since
+        the reservation cleared every count, and there is none to give
+        back: the failure that brought us here is what the caller sees."""
+        with self._lock:
+            if key in self._live:
+                self._live[key] -= 1
 
     def fill(self, view: ViewSpec, build: Callable[[bool], Any]) -> int:
         """Start workers for ``view`` until it holds as many as the pool
@@ -1094,9 +1117,14 @@ class LocalExecutor:
         )
 
     def close(self) -> None:
+        # First, so a view sandbox built from here on is refused rather
+        # than started where no drain would cover it. A session worker
+        # start already under way finishes before the lock below is ours,
+        # and is shut down with the rest.
+        self._closed = True
+        self._trees.close()
         self._pool.close()  # best-effort internally
         with self._session_lock:
-            self._closed = True
             started, self._session_started = self._session_started, False
         shutdown = getattr(self._sandbox, "shutdown", None)
         if started and callable(shutdown):  # process/kernel worker
@@ -1175,9 +1203,14 @@ class LocalExecutor:
         the ro cache rpc handler — so the returned sandbox refuses
         writes on its own. A worker sandbox runs the config's
         ``worker_setup`` on each worker it starts; ``pooled`` says whether
-        it is kept for later calls, for the setup's ``admit`` gate."""
+        it is kept for later calls, for the setup's ``admit`` gate.
+
+        Raises once the executor is closed: a view call after
+        :meth:`close` or :meth:`drain` starts nothing."""
         from sandtrap import sandbox
 
+        if self._closed:
+            raise RuntimeError("LocalExecutor is closed")
         ctx = self._require_ctx()
         cfg = ctx.python_config
         timeout = view.timeout if view else None
@@ -1249,8 +1282,11 @@ class LocalExecutor:
                 else {}
             ),
         )
-        if cfg.supervise_tree:
-            self._trees.track(built)
+        # A close that began after the check above has closed the ledger
+        # first, so a sandbox built across it is refused here, before any
+        # worker starts on it.
+        if cfg.supervise_tree and not self._trees.track(built):
+            raise RuntimeError("LocalExecutor is closed")
         return built
 
     def _worker_setup(
