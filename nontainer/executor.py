@@ -1070,6 +1070,7 @@ class LocalExecutor:
         not started yet. One worker however many first calls race here:
         exec_python is safe to call concurrently."""
         if self._require_ctx().python_config.isolation == "none":
+            self._check_open()
             return self._sandbox  # in-process: no worker to start
         if not self._session_started:
             with self._session_lock:
@@ -1115,6 +1116,12 @@ class LocalExecutor:
         return self._pool.fill(
             view, lambda pooled: self._build_sandbox(view, pooled=pooled)
         )
+
+    def _check_open(self) -> None:
+        """Refuse an execution once the executor is closed, whichever path
+        it takes: nothing runs after :meth:`close` or :meth:`drain`."""
+        if self._closed:
+            raise RuntimeError("LocalExecutor is closed")
 
     def close(self) -> None:
         # First, so a view sandbox built from here on is refused rather
@@ -1209,8 +1216,7 @@ class LocalExecutor:
         :meth:`close` or :meth:`drain` starts nothing."""
         from sandtrap import sandbox
 
-        if self._closed:
-            raise RuntimeError("LocalExecutor is closed")
+        self._check_open()
         ctx = self._require_ctx()
         cfg = ctx.python_config
         timeout = view.timeout if view else None
@@ -1657,6 +1663,7 @@ class LocalExecutor:
         from termish import TerminalError, execute
         from termish.parser import ParseError
 
+        self._check_open()
         ctx = self._require_ctx()
         # Snapshot per call: command mutations of the env dict must not
         # leak across calls (termish shares the dict it is given).

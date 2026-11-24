@@ -273,13 +273,17 @@ def test_a_closed_runtime_runs_nothing(execute):
         ws.close()
 
 
-def test_a_closed_executor_builds_no_view_sandbox():
-    ws = _ws("closed-executor")
+@pytest.mark.parametrize("isolation", ["process", "none"])
+@pytest.mark.parametrize("execute", _EXECUTIONS.values(), ids=_EXECUTIONS.keys())
+def test_a_closed_executor_runs_nothing(execute, isolation):
+    # Reached directly, as a call that passed the runtime's check before
+    # the close would reach it.
+    ws = _ws(f"closed-executor-{isolation}", isolation=isolation)
     executor = ws.runtime.executor
     try:
         ws.runtime.close()
         with pytest.raises(RuntimeError, match="LocalExecutor is closed"):
-            executor.exec_python("x = 1", view=VIEW)
+            execute(executor)
     finally:
         ws.close()
 
