@@ -785,7 +785,9 @@ class Runtime:
         sandtrap broker those workers came from stays warm for the next
         workspace. A call still running in another thread ends with its
         worker and returns as an errored result, even one blocked where
-        :meth:`interrupt` can't reach it.
+        :meth:`interrupt` can't reach it. A workspace's job ends with
+        ``Workspace.drain``, which drains before it closes: closing the
+        workspace first would wait such a call out.
 
         A :class:`~nontainer.DrainResult` says what could be confirmed:
         ``"confirmed"``, ``"timed_out"`` (drain again to wait longer),

@@ -20,6 +20,7 @@ from nontainer import (
     Runtime,
     ViewSpec,
     Workspace,
+    WorkspaceError,
 )
 from nontainer.providers.kvgit import KvgitProvider
 
@@ -205,6 +206,35 @@ def test_a_drain_ends_a_call_a_stop_cannot_reach(helpers, tmp_path):
 
 
 @linux_only
+def test_ws_drain_ends_a_stuck_call_rather_than_waiting_it_out(helpers, tmp_path):
+    ws = _supervised("drain-ws-stuck")
+    helpers.append(_call(ws, "tree_state.spawn(60)"))
+    started = tmp_path / "started"
+    # Through the workspace, so the call holds the lock ws.close() takes.
+    thread, out = _in_thread(
+        lambda: ws.run_python(
+            f"import tree_state\ntree_state.block({str(started)!r}, 60)"
+        )
+    )
+    deadline = time.monotonic() + 10
+    while not started.exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    assert ws.runtime.interrupt()  # the stop lands, but the call is stuck
+    began = time.monotonic()
+    result = ws.drain()
+    took = time.monotonic() - began
+    thread.join(10)
+    assert not thread.is_alive()
+    assert took < 15  # ended, not waited out (60 s)
+    assert result.confirmed
+    assert out[0].error is not None
+    assert not _running(helpers[0])
+    with pytest.raises(WorkspaceError, match="closed"):
+        ws.run_python("x = 1")
+
+
+@linux_only
 def test_drain_after_close_still_confirms(helpers):
     ws = _supervised("drain-after-close")
     helpers.append(_call(ws, "tree_state.spawn(60)"))
@@ -231,6 +261,16 @@ def test_drain_is_unsupported_without_supervise_tree():
         assert ws.runtime.drain() == DrainResult("unsupported")
     finally:
         ws.close()
+
+
+def test_ws_drain_closes_the_workspace_and_answers_for_its_runtime():
+    ws = _ws("drain-ws-unsupervised")
+    assert _call(ws, "1") == 1
+    assert ws.drain() == DrainResult("unsupported")
+    with pytest.raises(WorkspaceError, match="closed"):
+        ws.run_python("x = 1")
+    # Again, and after close: the same answer.
+    assert ws.drain() == DrainResult("unsupported")
 
 
 def test_drain_is_unsupported_in_process():

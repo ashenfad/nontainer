@@ -765,6 +765,8 @@ runtime and its executor, closes anything attached under
 provider the embedder built and passed in. A workspace is the owner of
 its substrate, not a borrower of one, so a caller that wants the
 provider to outlive the workspace has to say so by not handing it over.
+`ws.drain()` closes the same way, after confirming that what the
+workspace's execution started is gone (see `rt.drain` below).
 
 **Every frozen open is a workspace to close.** `ws.tags.at(name)`,
 `store.tags.at(name)`, `store.resolve(ref)` and
@@ -1911,6 +1913,12 @@ its worker and returns as an errored result. That includes a call
 blocked where `interrupt()` can't reach it, so a host whose stop didn't
 land can drain anyway.
 
+A workspace ends a job with **`ws.drain(timeout=10.0)`**: it drains its
+runtime, then closes as `ws.close()` does, and returns the drain's
+`DrainResult`. Drain before closing, not after. A call still running
+holds the lock `ws.close()` takes, so closing first waits that call
+out, however long it is stuck; draining first ends it.
+
 ```python
 for job in jobs:
     ws = workspace(job.session, python=PythonConfig(
@@ -1918,8 +1926,7 @@ for job in jobs:
     try:
         run(job, ws)
     finally:
-        ws.close()
-        outcome = ws.runtime.drain(timeout=10.0)
+        outcome = ws.drain(timeout=10.0)
     if not outcome.confirmed:
         retire_executor()   # timed_out: drain again; lost_contact: give up
 ```

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **`PythonConfig.supervise_tree` and `Runtime.drain(timeout)`** (#340): on Linux, `drain` closes the runtime and confirms every process its workers started is gone, as a `DrainResult`.
+- **`PythonConfig.supervise_tree`, `Workspace.drain(timeout)` and `Runtime.drain(timeout)`** (#340): on Linux, a drain confirms every process the workers started is gone, as a `DrainResult`; `ws.drain()` drains before it closes, so a stuck call can't hold the close.
 
 ### Changed
 - **Requires sandtrap with `supervise_tree`** (sandtrap#89); the pool checks worker liveness through sandtrap's public `worker_alive`.

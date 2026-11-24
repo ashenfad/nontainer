@@ -67,6 +67,7 @@ from ..migrate import legacy_keys
 from ..protocol import (
     Capabilities,
     CommitInfo,
+    DrainResult,
     MergeOutcome,
     TagInfo,
     WorkspaceDiff,
@@ -2928,6 +2929,24 @@ class Workspace:
                 # Last, after everything that reads through it.
                 if self._owns_store and self._store is not None:
                     self._store.close()
+
+    def drain(self, timeout: float = 10.0) -> DrainResult:
+        """End this workspace as a job: drain its runtime, then close as
+        :meth:`close` does, and return the drain's result.
+
+        For a host that admits its next job only once the last has left
+        nothing running; :meth:`Runtime.drain` says what is confirmed and
+        on which executors. The order is the point. A call still running
+        holds the lock :meth:`close` takes, so closing first would wait
+        that call out, however long it is stuck. Draining first ends it
+        with its worker, and the close then finds the lock free once the
+        call has returned its error. Safe to call again, and after
+        :meth:`close`.
+        """
+        try:
+            return self._runtime.drain(timeout)
+        finally:
+            self.close()
 
     def __enter__(self) -> "Workspace":
         return self
