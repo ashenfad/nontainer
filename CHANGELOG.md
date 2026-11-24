@@ -5,14 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.15.0 - 2026-11-24
 
 ### Added
 - **`PythonConfig.supervise_tree`, `Workspace.drain(timeout)` and `Runtime.drain(timeout)`** (#340): on Linux, a drain confirms every process the workers started is gone, as a `DrainResult`; `ws.drain()` drains before it closes, so a stuck call can't hold the close.
 
 ### Changed
 - **Requires sandtrap 0.5.5** for `supervise_tree` (sandtrap#89) and for drains that end a running call without raising; the pool checks worker liveness through sandtrap's public `worker_alive`.
-- **A closed or drained runtime runs nothing.** `Runtime.exec_python` and `exec_shell` raise `RuntimeError`, where a view call or a shell script used to run anyway and could start a worker after the drain.
+- **A closed or drained runtime runs nothing.** `Runtime.exec_python` and `exec_shell` raise `RuntimeError`, as does `LocalExecutor` called directly, where a view call or a shell script used to run anyway and could start a worker after the drain.
 
 ## 0.14.0 - 2026-11-20
 
