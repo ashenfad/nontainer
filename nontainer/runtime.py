@@ -783,7 +783,9 @@ class Runtime:
         worker and every view worker this runtime used, replaced and
         reaped ones included, with whatever each of them started. The
         sandtrap broker those workers came from stays warm for the next
-        workspace.
+        workspace. A call still running in another thread ends with its
+        worker and returns as an errored result, even one blocked where
+        :meth:`interrupt` can't reach it.
 
         A :class:`~nontainer.DrainResult` says what could be confirmed:
         ``"confirmed"``, ``"timed_out"`` (drain again to wait longer),

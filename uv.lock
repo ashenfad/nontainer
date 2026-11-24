@@ -2011,7 +2011,7 @@ wheels = [
 [[package]]
 name = "sandtrap"
 version = "0.5.3"
-source = { git = "https://github.com/ashenfad/sandtrap?branch=feat%2Ftree-drain#3dee4e99656d6f4e1ab4f5b75853e8bb04505ff9" }
+source = { git = "https://github.com/ashenfad/sandtrap?branch=feat%2Ftree-drain#942854b2811cc29469f3b900e770adcd56d8c626" }
 dependencies = [
     { name = "monkeyfs" },
 ]
