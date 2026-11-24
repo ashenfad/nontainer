@@ -27,7 +27,7 @@ dependencies = [
     # whose features nontainer uses; the CHANGELOG says which needed what.
     "termish>=0.2.4",
     "monkeyfs>=0.2.10",
-    "sandtrap[render]>=0.5.3",
+    "sandtrap[render]>=0.5.4",
     # Capped below 0.5: merges resolve through kvgit.versioned.merge,
     # which is not public API.
     "kvgit[disk]>=0.4.3,<0.5",
@@ -90,11 +90,6 @@ dev = [
     # the request asks for it, which needs pyarrow in the worker
     "pyarrow",
 ]
-
-# Draft only: sandtrap's supervise_tree is unreleased. Replaced by a floor
-# bump to the release that ships it before this merges.
-[tool.uv.sources]
-sandtrap = { git = "https://github.com/ashenfad/sandtrap", branch = "feat/tree-drain" }
 
 [build-system]
 requires = ["hatchling"]

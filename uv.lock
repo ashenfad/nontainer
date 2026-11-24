@@ -979,7 +979,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.6" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", extras = ["render"], git = "https://github.com/ashenfad/sandtrap?branch=feat%2Ftree-drain" },
+    { name = "sandtrap", extras = ["render"], specifier = ">=0.5.4" },
     { name = "sqlalchemy", marker = "extra == 'dev'" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.2.4" },
@@ -2010,10 +2010,14 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.5.3"
-source = { git = "https://github.com/ashenfad/sandtrap?branch=feat%2Ftree-drain#942854b2811cc29469f3b900e770adcd56d8c626" }
+version = "0.5.4"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4d/35/eb74869a79ec95d3adac7d832213a767488dd9206277722f6ea69be8c37d/sandtrap-0.5.4.tar.gz", hash = "sha256:ced505d385a6dbefab154070f7f7bfd520e83c089b87c25871352c25007e1019", size = 241067, upload-time = "2026-11-24T17:20:23.83Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/eb/6a947b4cad7c7aa4d26e6cdc4af854c44f769ee4f34bc7ded6cc6b705c81/sandtrap-0.5.4-py3-none-any.whl", hash = "sha256:76ebef7d3e3073596bd4f646cd9c64bb6b05cbab085c0449974415a41aac3557", size = 135834, upload-time = "2026-11-24T17:20:22.883Z" },
 ]
 
 [package.optional-dependencies]
