@@ -135,6 +135,7 @@ def _bare_runtime(executor):
 
     rt = Runtime.__new__(Runtime)
     rt._executor = executor
+    rt._closed = False
     rt.sync_if_stale = lambda: None
     return rt
 

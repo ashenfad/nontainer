@@ -399,7 +399,9 @@ class Runtime:
         single-writer lock and the commit flow; most callers want that.
 
         The executor's view is brought current first, so a host-side
-        write is visible to the guest's very next ``cat``."""
+        write is visible to the guest's very next ``cat``. Raises
+        ``RuntimeError`` once the runtime is closed or drained."""
+        self._check_open()
         self.sync_if_stale()
         return self._executor.exec_shell(script)
 
@@ -436,7 +438,10 @@ class Runtime:
         ``Workspace.lock``.
 
         Delegates to the executor (``LocalExecutor.exec_python`` —
-        where the namespace assembly and rendering live)."""
+        where the namespace assembly and rendering live). Raises
+        ``RuntimeError`` once the runtime is closed or drained: nothing
+        a drain confirmed gone may start again."""
+        self._check_open()
         # The chokepoint for python execution — run_python, the
         # terminal ``python`` builtin, and apps dispatch all land here,
         # so a host-side write is visible to every one of them.
@@ -811,6 +816,10 @@ class Runtime:
         can't stop, notes the count it started at and stops once it
         moves."""
         return self._interrupts
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Runtime is closed")
 
     def close(self) -> None:
         """Release execution resources. Idempotent. Settles a pending

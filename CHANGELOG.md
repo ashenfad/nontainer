@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Requires sandtrap 0.5.5** for `supervise_tree` (sandtrap#89) and for drains that end a running call without raising; the pool checks worker liveness through sandtrap's public `worker_alive`.
+- **A closed or drained runtime runs nothing.** `Runtime.exec_python` and `exec_shell` raise `RuntimeError`, where a view call or a shell script used to run anyway and could start a worker after the drain.
 
 ## 0.14.0 - 2026-11-20
 

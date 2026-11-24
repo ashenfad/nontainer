@@ -243,15 +243,84 @@ def test_drain_after_close_still_confirms(helpers):
     assert not _running(helpers[0])
 
 
+_EXECUTIONS = {
+    "session": lambda rt: rt.exec_python("x = 1"),
+    "view": lambda rt: rt.exec_python("x = 1", view=VIEW),
+    "shell": lambda rt: rt.exec_shell("echo hi"),
+}
+
+
 @linux_only
-def test_a_drained_runtime_runs_nothing():
+@pytest.mark.parametrize("execute", _EXECUTIONS.values(), ids=_EXECUTIONS.keys())
+def test_a_drained_runtime_runs_nothing(execute):
     ws = _supervised("drain-closed")
     try:
         assert ws.runtime.drain().confirmed
         with pytest.raises(RuntimeError, match="closed"):
-            ws.runtime.exec_python("x = 1")
+            execute(ws.runtime)
     finally:
         ws.close()
+
+
+@pytest.mark.parametrize("execute", _EXECUTIONS.values(), ids=_EXECUTIONS.keys())
+def test_a_closed_runtime_runs_nothing(execute):
+    ws = _ws("closed-runtime")
+    try:
+        ws.runtime.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            execute(ws.runtime)
+    finally:
+        ws.close()
+
+
+def test_a_closed_executor_builds_no_view_sandbox():
+    ws = _ws("closed-executor")
+    executor = ws.runtime.executor
+    try:
+        ws.runtime.close()
+        with pytest.raises(RuntimeError, match="LocalExecutor is closed"):
+            executor.exec_python("x = 1", view=VIEW)
+    finally:
+        ws.close()
+
+
+@linux_only
+def test_a_view_sandbox_built_as_a_drain_begins_starts_no_worker(monkeypatch):
+    import sandtrap
+
+    ws = _supervised("drain-mid-build")
+    executor = ws.runtime.executor
+    real = sandtrap.sandbox
+    drained = []
+
+    def build_then_drain(*args, **kwargs):
+        # The build passed the executor's closed check; a drain begins on
+        # another thread before the sandbox is accounted for.
+        built = real(*args, **kwargs)
+        drainer = threading.Thread(
+            target=lambda: drained.append(ws.runtime.drain()), daemon=True
+        )
+        drainer.start()
+        deadline = time.monotonic() + 10
+        while not executor._trees._closed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        built_sandboxes.append(built)
+        return built
+
+    built_sandboxes = []
+    monkeypatch.setattr(sandtrap, "sandbox", build_then_drain)
+    try:
+        with pytest.raises(RuntimeError, match="LocalExecutor is closed"):
+            executor.exec_python("x = 1", view=VIEW)
+        deadline = time.monotonic() + 10
+        while not drained and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        ws.close()
+    assert drained == [DrainResult("confirmed")]
+    (built,) = built_sandboxes
+    assert not built.worker_alive
+    assert built.generation == 0
 
 
 def test_drain_is_unsupported_without_supervise_tree():
