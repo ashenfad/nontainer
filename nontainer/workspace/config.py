@@ -450,6 +450,23 @@ class PythonConfig:
     another process, and is refused when a workspace opens with
     isolation or on dud."""
 
+    supervise_tree: bool = False
+    """Account for every process a worker starts, so
+    :meth:`Runtime.drain <nontainer.Runtime.drain>` can confirm they
+    are all gone. ``isolation="process"``/``"kernel"`` only, and Linux
+    only: elsewhere the workspace refuses to open.
+
+    Each worker (the session worker and every view worker) runs under a
+    supervisor of its own, forked from sandtrap's broker, which adopts
+    whatever the worker leaves behind. When a worker exits, its
+    supervisor ends the rest of its tree: ``SIGTERM``, then ``SIGKILL``
+    after ``tree_grace`` seconds. The broker is untouched, so it stays
+    warm for the next workspace."""
+
+    tree_grace: float = 1.0
+    """Seconds a process a supervised worker left behind has between
+    ``SIGTERM`` and ``SIGKILL``. Only with ``supervise_tree``."""
+
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "host_objects", MappingProxyType(dict(self.host_objects))

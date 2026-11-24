@@ -72,6 +72,7 @@ from .host_objects import HostObject, _by_value, _stubbed, _typed, _value
 # seam. Re-exported here because this is where the seam is documented
 # and where every implementation imports it from.
 from .protocol import (
+    DrainResult,
     ExecutionContext,
     Executor,
     HarvestLost,
@@ -537,17 +538,12 @@ def _view_key(view: ViewSpec) -> tuple:
 def _worker_alive(sandbox: Any) -> bool:
     """Whether a process/kernel sandbox still has a live worker.
 
-    White-box on sandtrap by necessity: ``ProcessSandbox`` exposes no
-    liveness predicate, and the alternative — letting the next
-    ``exec()`` respawn lazily — re-forks from the CURRENT host, which
-    is the thing the pool exists to avoid. An unrecognized shape reads
-    as dead: recycling a sandbox we can't vouch for is the worse error.
+    Asked rather than left to the next ``exec()``, which would start a
+    replacement worker lazily, mid-call. An unrecognized shape reads as
+    dead: recycling a sandbox we can't vouch for is the worse error.
     """
-    process = getattr(sandbox, "_process", None)
-    if process is None:
-        return False
     try:
-        return bool(process.is_alive())
+        return bool(getattr(sandbox, "worker_alive", False))
     except Exception:
         return False
 
@@ -561,6 +557,101 @@ def _shutdown_quietly(sandbox: Any) -> None:
             shutdown()
         except Exception:
             pass
+
+
+class _TreeLedger:
+    """Every supervised sandbox an executor built, until its workers'
+    process trees are confirmed gone, and what the confirmed ones came to.
+
+    A sandbox enters at :meth:`track`, when it is built, and is retired
+    once nothing will use it again: a view worker reaped or a transient
+    one done, the session sandbox at close. A retired sandbox is settled
+    as soon as its supervisors have reported, checked without waiting
+    each time a sandbox is tracked or retired, so a long-lived executor
+    serving many view calls does not keep every sandbox it ever built.
+    :meth:`drain` waits for the rest.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # One thread drains sandboxes at a time: a sandbox's drain is not
+        # made to be called from two at once.
+        self._settling = threading.Lock()
+        self._open: list[Any] = []
+        self._retired: list[Any] = []
+        self._workers = self._helpers = self._killed = 0
+        self._lost = False
+
+    def track(self, sandbox: Any) -> None:
+        with self._lock:
+            self._open.append(sandbox)
+        self._settle_retired()
+
+    def retire(self, sandbox: Any) -> None:
+        """Note that nothing will execute on ``sandbox`` again; draining it
+        ends it, so only such a sandbox is ever drained before the end."""
+        with self._lock:
+            if any(open_ is sandbox for open_ in self._open) and not any(
+                retired is sandbox for retired in self._retired
+            ):
+                self._retired.append(sandbox)
+        self._settle_retired()
+
+    def drain(self, timeout: float) -> DrainResult:
+        """Drain every sandbox not yet settled, within ``timeout``
+        seconds in all."""
+        deadline = time.monotonic() + timeout
+        with self._settling:
+            with self._lock:
+                pending = list(self._open)
+            for sandbox in pending:
+                self._settle(sandbox, max(deadline - time.monotonic(), 0.0))
+        with self._lock:
+            if self._lost:
+                status = "lost_contact"
+            elif self._open:
+                status = "timed_out"
+            else:
+                status = "confirmed"
+            return DrainResult(
+                status,
+                workers=self._workers,
+                helpers=self._helpers,
+                killed=self._killed,
+            )
+
+    def _settle_retired(self) -> None:
+        # Opportunistic: whoever is already settling covers these, or the
+        # next track or retire does.
+        if not self._settling.acquire(blocking=False):
+            return
+        try:
+            with self._lock:
+                retired = list(self._retired)
+            for sandbox in retired:
+                self._settle(sandbox, 0.0)
+        finally:
+            self._settling.release()
+
+    def _settle(self, sandbox: Any, timeout: float) -> None:
+        try:
+            result = sandbox.drain(timeout=timeout)
+        except Exception:
+            return  # still open: the final drain asks again
+        if result.status == "timed_out":
+            return
+        with self._lock:
+            if not any(open_ is sandbox for open_ in self._open):
+                return
+            self._open = [open_ for open_ in self._open if open_ is not sandbox]
+            self._retired = [r for r in self._retired if r is not sandbox]
+            # A sandbox's counts cover its confirmed trees, so they are
+            # taken once, when it settles either way.
+            self._workers += result.workers
+            self._helpers += result.helpers
+            self._killed += result.killed
+            if result.status != "confirmed":
+                self._lost = True
 
 
 class _NotPoolable(Exception):
@@ -651,9 +742,12 @@ class _ViewWorkerPool:
         *,
         enabled: bool,
         clock: Callable[[], float] = time.monotonic,
+        retire: Callable[[Any], None] | None = None,
     ) -> None:
         self._size = size if enabled else 0
         self._lock = threading.Lock()
+        # Told of each sandbox the pool is done with, once it is shut down.
+        self._retire = retire
         # Monotonic, so a wall-clock step never makes a worker look
         # older or younger than it is.
         self._clock = clock
@@ -700,8 +794,12 @@ class _ViewWorkerPool:
             sandbox, "__enter__"
         )
         if own_worker:
-            with sandbox:
-                yield sandbox
+            try:
+                with sandbox:
+                    yield sandbox
+            finally:
+                if self._retire is not None:
+                    self._retire(sandbox)
         else:
             yield sandbox
 
@@ -728,7 +826,7 @@ class _ViewWorkerPool:
                 # A worker that died between calls (crash, OOM, seccomp
                 # kill, or the unresponsive-worker kill) frees its slot.
                 self._live[key] -= 1
-                _shutdown_quietly(sandbox)
+                self._reap(sandbox)
             if self._live.get(key, 0) >= self._size:
                 return build(False), False
             self._live[key] = self._live.get(key, 0) + 1
@@ -793,7 +891,12 @@ class _ViewWorkerPool:
                 self._idle.setdefault(key, []).append((sandbox, self._clock()))
                 return
             self._live[key] = self._live.get(key, 1) - 1
+        self._reap(sandbox)
+
+    def _reap(self, sandbox: Any) -> None:
         _shutdown_quietly(sandbox)
+        if self._retire is not None:
+            self._retire(sandbox)
 
     def close(self) -> None:
         """Reap every idle worker. Workers still checked out are reaped
@@ -804,7 +907,7 @@ class _ViewWorkerPool:
             self._idle.clear()
             self._live.clear()
         for sandbox in idle:
-            _shutdown_quietly(sandbox)
+            self._reap(sandbox)
 
     def reap_idle(self, max_age: float) -> int:
         """Close every idle worker unused for at least ``max_age``
@@ -844,7 +947,7 @@ class _ViewWorkerPool:
                 if self._live.get(key) == 0:
                     del self._live[key]
         for sandbox in reaped:
-            _shutdown_quietly(sandbox)
+            self._reap(sandbox)
         return len(reaped)
 
 
@@ -894,6 +997,9 @@ class LocalExecutor:
         # never opened is a pool that is never used, so an inert one is
         # the right default — close() must work regardless.
         self._pool = _ViewWorkerPool(0, enabled=False)
+        # Under PythonConfig.supervise_tree, every sandbox built, until
+        # its workers' trees are confirmed gone.
+        self._trees = _TreeLedger()
         # The sandboxes executing now, per call, for interrupt().
         self._running: dict[object, Any] = {}
         self._running_lock = threading.Lock()
@@ -914,6 +1020,12 @@ class LocalExecutor:
                 "Use isolation='process' or 'kernel', or prepare the host "
                 "yourself."
             )
+        if cfg.supervise_tree and cfg.isolation == "none":
+            raise NotSupportedError(
+                "supervise_tree accounts for the processes a worker starts, and "
+                "isolation='none' runs code in this process: what it starts is "
+                "this process's own. Use isolation='process' or 'kernel'."
+            )
         if cfg.isolation != "none":
             _refuse_unnameable_classes(cfg, "in a worker process")
             _refuse_live_calls(cfg, "in a worker process")
@@ -922,7 +1034,9 @@ class LocalExecutor:
         # Pooling only means anything where a call would otherwise fork:
         # an in-process view sandbox costs no worker at all.
         self._pool = _ViewWorkerPool(
-            cfg.warm_view_workers, enabled=cfg.isolation != "none"
+            cfg.warm_view_workers,
+            enabled=cfg.isolation != "none",
+            retire=self._trees.retire if cfg.supervise_tree else None,
         )
         # The sandbox and its policy are built here, so a bad config
         # still fails at open. Its worker (process/kernel isolation)
@@ -990,6 +1104,27 @@ class LocalExecutor:
                 shutdown()
             except Exception:
                 pass  # best-effort by contract: the provider closes next
+        if self._ctx is not None and self._ctx.python_config.supervise_tree:
+            self._trees.retire(self._sandbox)
+
+    def drain(self, timeout: float = 10.0) -> DrainResult:
+        """Close, then wait up to ``timeout`` seconds for confirmation
+        that every process this executor's workers started is gone: the
+        session worker and every view worker, pooled or transient,
+        including those reaped or replaced along the way. See
+        ``Runtime.drain``.
+
+        ``"unsupported"`` without ``PythonConfig.supervise_tree``, and
+        ``"confirmed"`` on an executor never opened, which ran nothing.
+        Safe to call again: it waits on whatever is still unsettled.
+        """
+        self.close()
+        ctx = self._ctx
+        if ctx is None:
+            return DrainResult("confirmed")
+        if not ctx.python_config.supervise_tree:
+            return DrainResult("unsupported")
+        return self._trees.drain(timeout)
 
     def reap_idle(self, max_age: float) -> int:
         """Close view workers idle for at least ``max_age`` seconds;
@@ -1081,7 +1216,7 @@ class LocalExecutor:
                         _value(entry)
                     )
 
-        return sandbox(
+        built = sandbox(
             policy,
             isolation=cfg.isolation,
             mode="raw",
@@ -1108,7 +1243,15 @@ class LocalExecutor:
                 if cfg.isolation != "none" and cfg.worker_setup is not None
                 else {}
             ),
+            **(
+                {"supervise_tree": True, "tree_grace": cfg.tree_grace}
+                if cfg.supervise_tree
+                else {}
+            ),
         )
+        if cfg.supervise_tree:
+            self._trees.track(built)
+        return built
 
     def _worker_setup(
         self, view: ViewSpec | None, pooled: bool
@@ -1578,6 +1721,10 @@ class NoExecutor:
 
     def close(self) -> None:
         pass
+
+    def drain(self, timeout: float = 10.0) -> DrainResult:
+        """Always confirmed: nothing ran, so nothing was started."""
+        return DrainResult("confirmed")
 
     # -- execution: the refusal -------------------------------------------
 

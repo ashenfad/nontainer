@@ -36,9 +36,9 @@ class FakeSandbox:
         self.entered = 0
         self.shutdowns = 0
         self.alive = True
-        self._process = self
 
-    def is_alive(self) -> bool:  # stands in for multiprocessing.Process
+    @property
+    def worker_alive(self) -> bool:  # stands in for ProcessSandbox's
         return self.alive
 
     def __enter__(self):

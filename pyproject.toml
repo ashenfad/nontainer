@@ -91,6 +91,11 @@ dev = [
     "pyarrow",
 ]
 
+# Draft only: sandtrap's supervise_tree is unreleased. Replaced by a floor
+# bump to the release that ships it before this merges.
+[tool.uv.sources]
+sandtrap = { git = "https://github.com/ashenfad/sandtrap", branch = "feat/tree-drain" }
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

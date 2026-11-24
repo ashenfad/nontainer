@@ -1792,6 +1792,8 @@ rt.interrupt() -> bool                # stop the code running now;
 rt.interrupts -> int                  # how many times interrupt() was
                                       # called (a test_app run watches it)
 rt.close() -> None
+rt.drain(timeout: float = 10.0) -> DrainResult  # close, then confirm what
+                                      # execution started is gone
 ```
 
 Executors never commit. A runtime returns results and the workspace
@@ -1893,6 +1895,40 @@ when the call begins, and its browser run stops once the count moves,
 failing the action in progress as cancelled. It holds no workspace
 lock, so a host that interrupts only while the lock is taken should
 interrupt once whenever it stops a turn with a call in flight.
+
+**`rt.drain(timeout=10.0)`** closes the runtime, then waits for
+confirmation that every process its execution started is gone, for a
+host that runs one job at a time and admits the next only once the last
+has left nothing running. On `LocalExecutor` that needs
+`PythonConfig(supervise_tree=True)` (Linux, process or kernel
+isolation): each worker then runs under a supervisor that ends whatever
+the worker left behind when it exits, `SIGTERM` and then `SIGKILL`
+after `tree_grace`. The drain covers the session worker and every view
+worker the runtime used, reaped and replaced ones included. sandtrap's
+broker is untouched, so the next workspace's workers still start warm.
+
+```python
+for job in jobs:
+    ws = workspace(job.session, python=PythonConfig(
+        isolation="process", supervise_tree=True, preload_grants=True))
+    try:
+        run(job, ws)
+    finally:
+        ws.close()
+        outcome = ws.runtime.drain(timeout=10.0)
+    if not outcome.confirmed:
+        retire_executor()   # timed_out: drain again; lost_contact: give up
+```
+
+A `DrainResult` says what could be confirmed: `"confirmed"`,
+`"timed_out"` (some worker's processes are still being ended; drain
+again to wait longer), `"lost_contact"` (some can no longer be
+accounted for), or `"unsupported"`, where the executor can't say:
+`DudExecutor` for now, and `LocalExecutor` in-process or without
+`supervise_tree`. A runtime that does not execute (`NoExecutor`)
+confirms at once. Processes the host starts itself, for a host object
+or a custom command, are the host's to account for. `drain` is safe to
+call again and after `close`.
 
 ## Executors
 
