@@ -1126,6 +1126,40 @@ def keep_names(keep: Collection[str] | None) -> frozenset[str] | None:
     return names
 
 
+@dataclass(frozen=True)
+class DrainResult:
+    """What :meth:`Runtime.drain <nontainer.Runtime.drain>` could confirm
+    about the processes a workspace's execution started.
+
+    ``status`` is one of:
+
+    - ``"confirmed"``: every worker has exited, and everything each one
+      started is gone.
+    - ``"timed_out"``: some worker's processes are still being ended.
+      Drain again to wait longer.
+    - ``"lost_contact"``: some worker's processes can no longer be
+      accounted for, and nothing later will change that. Retire the
+      executor that ran them.
+    - ``"unsupported"``: this executor cannot confirm it. That is an
+      executor that does not declare ``drain`` (``DudExecutor``), and a
+      ``LocalExecutor`` running in-process or without
+      ``PythonConfig.supervise_tree``.
+
+    ``workers``, ``helpers`` and ``killed`` count the workers confirmed
+    gone, the processes they left running when they exited, and how many
+    of those had to be killed after the grace period.
+    """
+
+    status: Literal["confirmed", "timed_out", "lost_contact", "unsupported"]
+    workers: int = 0
+    helpers: int = 0
+    killed: int = 0
+
+    @property
+    def confirmed(self) -> bool:
+        return self.status == "confirmed"
+
+
 @runtime_checkable
 class Executor(Protocol):
     """Execution contract. See module docstring for the seam's shape.

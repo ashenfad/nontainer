@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`PythonConfig.supervise_tree` and `Runtime.drain(timeout)`** (#340): on Linux, `drain` closes the runtime and confirms every process its workers started is gone, as a `DrainResult`.
+
+### Changed
+- **Requires sandtrap with `supervise_tree`** (sandtrap#89); the pool checks worker liveness through sandtrap's public `worker_alive`.
+
 ## 0.14.0 - 2026-11-20
 
 ### Added

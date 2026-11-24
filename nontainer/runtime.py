@@ -36,7 +36,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, MutableMapp
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from .protocol import ExecutionContext, StagedDiff, ViewSpec, keep_names
+from .protocol import DrainResult, ExecutionContext, StagedDiff, ViewSpec, keep_names
 from .workspace import (
     Mount,
     PythonConfig,
@@ -770,6 +770,35 @@ class Runtime:
             self._interrupts += 1
         interrupt = getattr(self._executor, "interrupt", None)
         return bool(interrupt()) if interrupt is not None else False
+
+    def drain(self, timeout: float = 10.0) -> DrainResult:
+        """Close this runtime, then wait up to ``timeout`` seconds for
+        confirmation that every process its execution started is gone.
+
+        For a host that runs one job at a time and admits the next only
+        once the last has left nothing running. It closes as
+        :meth:`close` does, so nothing executes here afterwards, and then
+        asks the executor. On ``LocalExecutor`` with
+        ``PythonConfig.supervise_tree`` (Linux), that covers the session
+        worker and every view worker this runtime used, replaced and
+        reaped ones included, with whatever each of them started. The
+        sandtrap broker those workers came from stays warm for the next
+        workspace.
+
+        A :class:`~nontainer.DrainResult` says what could be confirmed:
+        ``"confirmed"``, ``"timed_out"`` (drain again to wait longer),
+        ``"lost_contact"`` (retire the executor), or ``"unsupported"``
+        where the executor can't say: one that does not declare ``drain``
+        (``DudExecutor``), and ``LocalExecutor`` in-process or without
+        ``supervise_tree``. Processes the host started itself, a host
+        object's or a custom command's included, are the host's to
+        account for. Safe to call again, and after :meth:`close`.
+        """
+        self.close()
+        drain = getattr(self._executor, "drain", None)
+        if drain is None:
+            return DrainResult("unsupported")
+        return drain(timeout)
 
     @property
     def interrupts(self) -> int:
