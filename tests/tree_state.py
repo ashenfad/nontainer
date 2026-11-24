@@ -27,3 +27,13 @@ def spawn(seconds, ignore_term=False):
 
 def me():
     return os.getpid()
+
+
+def block(path, seconds):
+    """Create ``path``, then sleep ``seconds`` in one call, which a stop
+    can't interrupt."""
+    import time
+
+    with open(path, "w"):
+        pass
+    time.sleep(seconds)

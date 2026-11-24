@@ -1906,6 +1906,10 @@ the worker left behind when it exits, `SIGTERM` and then `SIGKILL`
 after `tree_grace`. The drain covers the session worker and every view
 worker the runtime used, reaped and replaced ones included. sandtrap's
 broker is untouched, so the next workspace's workers still start warm.
+A call still running in another thread when the drain starts ends with
+its worker and returns as an errored result. That includes a call
+blocked where `interrupt()` can't reach it, so a host whose stop didn't
+land can drain anyway.
 
 ```python
 for job in jobs:
