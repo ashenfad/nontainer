@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`AppsConfig.request_deadline`, a hard limit on each handler call** (#344): past it the handler's worker is killed and the request answers 504, even when the handler is blocked in a call `request_timeout` can't stop. Opt-in, and only under process or kernel isolation on the local executor; elsewhere building the app runtime raises `NotSupportedError`.
+- **`ViewSpec.deadline`, `PythonResult.deadline_exceeded` and `Runtime.view_deadline`**: the executor seam beneath it. `LocalExecutor` keeps a deadline under process or kernel isolation, and `DudExecutor` refuses one.
+
 ## 0.15.0 - 2026-11-24
 
 ### Added

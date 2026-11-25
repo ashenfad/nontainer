@@ -346,7 +346,9 @@ extension surface (`Runtime.exec_python`, no commit) with:
 - the same sandbox policy as `run_python` — handlers can do exactly
   what interactive agent code can do, nothing more (the symmetry rule);
 - a per-request tick/timeout budget tighter than the interactive one
-  (config: `AppsConfig.request_timeout`, `request_tick_limit`);
+  (config: `AppsConfig.request_timeout`, `request_tick_limit`), and,
+  when the embedder sets one, a hard deadline that answers 504
+  (`request_deadline`, [below](#a-hard-deadline-request_deadline));
 - stdout + tracebacks appended to `/workspace/app/logs/api.log` (the agent's
   repair loop is `tail`, edit, retry). Every `/api` request also logs a
   `METHOD path -> status` line, and the file opens with a header
@@ -451,6 +453,60 @@ Consumers:
    by the host app at `/apps/{token}/{path}`, resolving token →
    workspace via an embedder-supplied lookup. Same dispatch, same
    static serving.
+
+### A hard deadline: `request_deadline`
+
+`request_timeout` is a budget the handler's code is checked against as
+it runs. A handler blocked in a call (`time.sleep`, a synchronous HTTP
+client, a socket read) reaches no check until the call returns, so it
+runs on past its timeout and can still answer 200, late. An embedder
+that has to bound how long it waits for an answer sets a deadline too:
+
+```python
+AppsConfig(request_timeout=5.0, request_deadline=8.0)
+```
+
+The deadline is kept outside the handler and stops for nothing. When it
+passes:
+
+- the handler's worker is killed, and the request answers **504** with
+  `{"error": "the handler did not answer within 8s", "log": ...}`;
+- `api.log` gets a `DEADLINE` line that names the usual cause and its
+  fix;
+- a write the request staged is discarded, as on any handler error, and
+  nothing the handler would have returned is sent.
+
+It counts from when the executor takes the call, so starting a worker
+for it counts too. A start that takes the whole deadline isn't cut
+short, but the handler doesn't run, and a pooled worker is kept for the
+next request. Each call has its own deadline: a request that runs past it
+leaves the others, concurrent requests to the same published app
+included, to finish as they would. Set it above `request_timeout`. A
+handler that computes too long then still gets the 500 with its
+traceback, and keeps its worker; only one stuck in a call is killed.
+
+Two things can hold the 504 past the deadline itself:
+
+- **A host object's call** runs in the host, where killing the worker
+  can't reach it. The deadline lands as soon as the call returns, and
+  the handler's answer is never sent, but a slow host object holds the
+  request until then. Bound those yourself.
+- **Cleanup.** The 504 returns once the killed worker is reaped and its
+  pool slot is free. Under `PythonConfig.supervise_tree` it also waits
+  until the processes that worker started are confirmed gone, for up to
+  `tree_grace` plus a second; `drain()` accounts for any still being
+  ended after that. So once the 504 is back, the capacity the request
+  held can be reused.
+
+The next request on that slot starts a fresh worker and pays for its
+start: cheap for a stdlib policy, slow once pandas or plotly are
+granted. Leave the deadline room for that start, or start workers ahead
+of traffic (`PythonConfig.warm_view_workers`, `Runtime.warm`).
+
+The deadline needs a worker to kill, which means the local executor
+under process or kernel isolation. Anywhere else that runs handlers
+(`isolation="none"`, `DudExecutor`), building the app runtime with one
+raises `NotSupportedError` rather than serve handlers it can't bound.
 
 ## Frontend tooling
 
@@ -949,8 +1005,10 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   stopped, so the run waits for it, and nothing a handler writes lands
   after the result. A workspace runs its handlers one at a time, so the
   run waits while they keep finishing and gives up only once none has
-  finished in the handlers' `request_timeout` plus five seconds (a
-  handler that outruns its own limit), with a warning in the log. A
+  finished in the handlers' own limit plus five seconds (a handler that
+  outruns its own limit), with a warning in the log. That limit is
+  `request_deadline` when one is set, since nothing pauses it, and
+  `request_timeout` otherwise. A
   request that hasn't reached a handler when the run ends, one still
   waiting for the workspace's lock behind another call, is declined
   (503) and never runs, so it can't write after the result either. A
@@ -1162,8 +1220,8 @@ exceptions:
   reads a flag, such as a `threading.Event`'s `is_set`.
 
 A handler thread can't be stopped from inside the process; the
-executor's per-request limit (`request_timeout`, `request_tick_limit`)
-is what bounds it. So the drain a run does is a wait, not a kill: an
+executor's per-request limits (`request_timeout`, `request_tick_limit`,
+and `request_deadline` when set) are what bound it. So the drain a run does is a wait, not a kill: an
 owner that can't afford a handler's full limit has to stop the whole
 worker.
 
@@ -1487,7 +1545,8 @@ not the shape to copy.
   A custom `x-*` header *your* proxy consumes still passes — suppressing
   that one is yours, below
 - frozen snapshots are read-only; handlers cannot mutate the VFS
-- per-request time and output budgets; `{token}` is capability-grade
+- per-request time and output budgets, and a hard deadline when you
+  set `request_deadline`; `{token}` is capability-grade
 
 **You provide**, and nontainer cannot:
 

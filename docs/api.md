@@ -901,6 +901,8 @@ class PythonResult:
                                         # as intended (the 8MB cap; a value
                                         # nothing renders) -- actionable
                                         # text meant to reach the agent
+    deadline_exceeded: bool = False     # a view call ended at its
+                                        # ViewSpec.deadline; error says so
     # truthy iff error is None
 
 @dataclass(frozen=True)
@@ -1677,6 +1679,8 @@ ws.runtime.app_driver: AppDriver | None  # the executor's own app driver,
                                          # if the rung offers one
 ws.runtime.view_result_limit: int | None  # the largest bytes value one
                                          # view execution can carry back
+ws.runtime.view_deadline: bool  # whether a view call can be held to
+                                # ViewSpec.deadline
 ```
 
 **`ws.store`** is what makes store-level work on this session's
@@ -1739,7 +1743,8 @@ ws.runtime.exec_python(code, *, inputs=None, stdin=None, argv=None,
     # ViewSpec) requests a restricted, budgeted execution — a
     # read-only fs/cache view, a tighter timeout/tick budget, contract
     # classes in scope, the size of bytes value it must carry back
-    # (result_bytes) — and is executor-neutral: no sandbox object
+    # (result_bytes), a hard deadline (deadline, where
+    # ws.runtime.view_deadline) — and is executor-neutral: no sandbox object
     # crosses the seam. `echo` overrides expression echo for the call;
     # stdin/argv expose sandtrap's synthetic `sys`. Safe to call
     # concurrently with a `view` (frozen app serving does); callers
@@ -1774,6 +1779,11 @@ rt.view_result_limit -> int | None # the largest bytes value one view
                                    # None on LocalExecutor, 64 MiB on
                                    # DudExecutor. Apps lowers its
                                    # response-size caps to it.
+rt.view_deadline -> bool           # whether a view call can be held to
+                                   # ViewSpec.deadline: LocalExecutor
+                                   # under process/kernel isolation.
+                                   # Apps refuses request_deadline
+                                   # where it is False.
 rt.exec_python(code, ...) -> PythonResult   # raw: no lock, no commit
 rt.exec_shell(script) -> TerminalResult     # raw: no lock, no commit
 rt.register_command(name, fn, *, rebind=None) -> None
@@ -3659,7 +3669,7 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   any type max_response_bytes does not cover: images,
            #   octet-stream, the Arrow stream a table return answers
            #   with. Enforced the same way.
-           readonly_handlers=False)  # True: every handler runs against
+           readonly_handlers=False,  # True: every handler runs against
            #   a read-only filesystem and cache, whatever the verb, while
            #   authoring as once published — through ws-curl, test_app,
            #   a preview and dispatch alike, on every executor. A write
@@ -3668,9 +3678,19 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   and so does the workspace through the agent's own tools;
            #   test_app still writes screenshots and the request log.
            #   The apps notes then say every handler is read-only;
-           #   teach where state goes with handler_example. Fields are
-           #   declared in this order, so positional construction binds
-           #   them this way.
+           #   teach where state goes with handler_example.
+           request_deadline=None)  # a hard limit on each handler call,
+           #   in seconds: past it the worker is killed and the request
+           #   answers 504 (api.log: DEADLINE; a staged write discarded).
+           #   request_timeout is checked as the code runs, so a handler
+           #   blocked in a call runs past it; nothing pauses this. Set
+           #   it above request_timeout. Counts from when the executor
+           #   takes the call (a worker start included); a host object's
+           #   call in flight holds the 504 until it returns. Needs
+           #   process/kernel isolation on the local executor; elsewhere
+           #   building the app runtime raises NotSupportedError. See
+           #   apps.md, "A hard deadline". Fields are declared in this
+           #   order, so positional construction binds them this way.
 
 AppRuntime(ws, config=None, *, frozen=False, log_sink=None, screenshot_sink=None)
 # log_sink(line) / screenshot_sink(path, png): handler log lines and

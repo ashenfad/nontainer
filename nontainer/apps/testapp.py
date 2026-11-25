@@ -71,7 +71,7 @@ from .driver import (
 )
 
 if TYPE_CHECKING:
-    from .dispatch import AppRuntime
+    from .dispatch import AppRuntime, AppsConfig
 
 _HOST = "nontainer.test"
 _TOKEN = "t-test"
@@ -652,8 +652,17 @@ def _serve(
 
 
 #: How much longer than a handler's own per-request limit a run that has
-#: ended waits for the next of the requests its page left behind.
+#: ended waits for the next of the requests its page left behind: a
+#: handler's ``request_deadline`` when it has one, which nothing pauses,
+#: and its ``request_timeout`` otherwise.
 _DRAIN_MARGIN_MS = 5_000
+
+
+def _per_request_ms(config: "AppsConfig") -> int:
+    limit = config.request_deadline
+    if limit is None:
+        limit = config.request_timeout
+    return int(limit * 1000)
 
 
 def build_spec(
@@ -725,7 +734,7 @@ def build_spec(
         run_timeout_ms=run_timeout_ms,
         cancelled=cancelled,
         run_over=run_over,
-        drain_timeout_ms=int(runtime.config.request_timeout * 1000) + _DRAIN_MARGIN_MS,
+        drain_timeout_ms=_per_request_ms(runtime.config) + _DRAIN_MARGIN_MS,
         settle_cap_ms=int(settle_cap * 1000),
         max_screenshots=max_screenshots,
         screenshot_dir=runtime._screenshot_dir,

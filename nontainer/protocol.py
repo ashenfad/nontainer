@@ -1105,6 +1105,21 @@ class ViewSpec:
     publishes, and only what it is handed changes. Both names must be
     host objects; the caller checks that before asking."""
 
+    deadline: float | None = None
+    """A hard limit on this call, in seconds from when the executor takes
+    it (``None``: none). ``timeout`` is a budget the code is checked
+    against as it runs, so code blocked in a call (``time.sleep``, a
+    socket read, a slow host object) runs on past it. The deadline is
+    kept outside the code and stops for nothing: when it passes, the
+    executor ends the call however it must and sets
+    ``PythonResult.deadline_exceeded``, and nothing the code would have
+    returned comes back.
+
+    An executor that can't keep it MUST refuse the call with
+    ``NotSupportedError`` rather than run it unbounded; one that can declares
+    ``view_deadline = True`` (``Runtime.view_deadline``). LocalExecutor
+    keeps it under process or kernel isolation, by killing the worker."""
+
 
 def keep_names(keep: Collection[str] | None) -> frozenset[str] | None:
     """``keep`` as a frozenset of names, or ``None`` for every binding.
@@ -1177,6 +1192,10 @@ class Executor(Protocol):
     (``Mount(fs=...)``): the copy would read all of it, and nothing in
     the machine could reach the object afterwards. An executor that
     does not declare it reads the workspace filesystem in place.
+
+    An executor that can hold a view call to ``ViewSpec.deadline``
+    declares the optional ``view_deadline`` as true. One that doesn't
+    refuses a view with a deadline.
     """
 
     # -- capabilities ----------------------------------------------------

@@ -1216,6 +1216,13 @@ class DudExecutor:
                 "(no wire support in dud v0; use terminal() — real bash "
                 "pipes into real python)"
             )
+        if view is not None and view.deadline is not None:
+            # Not wired for the guest yet, so refused rather than run
+            # unbounded (``ViewSpec.deadline``).
+            raise NotSupportedError(
+                "ViewSpec.deadline is not supported by DudExecutor; use "
+                "LocalExecutor with process or kernel isolation"
+            )
         shadowed = _refuse_shadowed_host_module(ctx)
         if shadowed is not None:
             return PythonResult(stdout="", stderr="", error=shadowed)

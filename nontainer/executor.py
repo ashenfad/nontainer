@@ -516,6 +516,17 @@ def flatten_grants(cfg: PythonConfig) -> list[ModuleGrant]:
     return [e if isinstance(e, ModuleGrant) else ModuleGrant(e) for e in entries]
 
 
+def _past_deadline(deadline: float, duration: float) -> PythonResult:
+    """The result of a view call ended at its ``ViewSpec.deadline``."""
+    return PythonResult(
+        stdout="",
+        error=f"StDeadline: the call ran past its {deadline:g}s deadline and "
+        "was stopped",
+        duration=duration,
+        deadline_exceeded=True,
+    )
+
+
 def _view_key(view: ViewSpec) -> tuple:
     """A hashable identity for a view.
 
@@ -1001,6 +1012,15 @@ class LocalExecutor:
     # Nothing to ferry: the commands ARE reachable, and there is no
     # guest whose paths would need carrying across.
     supports_ws_verbs = False
+
+    @property
+    def view_deadline(self) -> bool:
+        """Whether a view call can be held to ``ViewSpec.deadline``:
+        under process or kernel isolation, where the call's worker is
+        killed when it passes. In process the code runs in this process,
+        where nothing can stop it."""
+        ctx = self._ctx
+        return ctx is not None and ctx.python_config.isolation != "none"
 
     def __init__(self) -> None:
         self._ctx: ExecutionContext | None = None
@@ -1491,6 +1511,15 @@ class LocalExecutor:
         from contextlib import ExitStack
 
         ctx = self._require_ctx()
+        # Counted from here, so a worker started for this call counts.
+        taken = time.monotonic()
+        deadline = view.deadline if view is not None else None
+        if deadline is not None and not self.view_deadline:
+            raise NotSupportedError(
+                "ViewSpec.deadline needs a worker to kill, and under "
+                "isolation='none' the code runs in this process, where "
+                "nothing can stop it: use process or kernel isolation"
+            )
         shadowed = _refuse_shadowed_host_module(ctx)
         if shadowed is not None:
             return PythonResult(stdout="", stderr="", error=shadowed)
@@ -1524,6 +1553,15 @@ class LocalExecutor:
 
             host_module = self._bind_names(namespace, sb, view)
             start = time.monotonic()
+            limit: dict[str, float] = {}
+            if deadline is not None:
+                left = deadline - (start - taken)
+                if left <= 0:
+                    # Starting the worker took the whole deadline. That
+                    # can't be cut short, but the code needn't run, and a
+                    # pooled worker is kept for the next call.
+                    return _past_deadline(deadline, 0.0)
+                limit["deadline"] = left
             call = object()
             with self._running_lock:
                 self._running[call] = sb
@@ -1538,11 +1576,20 @@ class LocalExecutor:
                     # a worker leaves an unselected binding behind
                     # unpickled
                     keep=keep_names(keep),
+                    **limit,
                 )
             finally:
                 with self._running_lock:
                     del self._running[call]
             duration = time.monotonic() - start
+
+        if deadline is not None:
+            from sandtrap import StDeadline
+
+            if isinstance(exec_result.error, StDeadline):
+                # Its worker was killed, and it is reaped by now: the
+                # pool takes no dead worker back.
+                return _past_deadline(deadline, duration)
 
         error = (
             _render_error(exec_result.error) if exec_result.error is not None else None

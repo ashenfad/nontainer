@@ -19,6 +19,7 @@ agent's repair loop is ``tail``, edit, retry.
 
 from __future__ import annotations
 
+import math
 import posixpath
 import re
 import time
@@ -28,6 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from ..errors import NotSupportedError
 from ..executor import ViewSpec
 from ..workspace import Workspace
 from .contract import (
@@ -783,13 +785,65 @@ class AppsConfig:
     state goes instead with ``handler_example``.
 
     Declared last: see ``frontend_notes``."""
+    request_deadline: float | None = None
+    """A hard limit on each handler call, in seconds: past it the request
+    answers 504, whatever the handler is doing. ``None``, the default,
+    sets none.
+
+    ``request_timeout`` is a budget the handler's code is checked against
+    as it runs, so a handler blocked in a call (``time.sleep``, a
+    synchronous HTTP client, a socket read) runs on past it and can still
+    answer 200. The deadline is kept outside the handler and stops for
+    nothing. When it passes, the handler's worker is killed, the request
+    answers 504, ``api.log`` says why, and a write the request staged is
+    discarded, as on any handler error. Nothing the handler would have
+    returned is sent. Set it above ``request_timeout``: a handler that
+    computes too long then still gets the 500 with its traceback, and
+    keeps its worker, and only one stuck in a call is killed.
+
+    It counts from when the executor takes the call, so starting a worker
+    for it counts too. Each call has its own: a request that runs past
+    it leaves the others, concurrent requests to the same published app
+    included, to finish as they would. A call to a host object runs in
+    this process and can't be killed with the worker, so the 504 waits
+    for one in flight to return; bound slow host objects yourself.
+
+    When the 504 is returned, the killed worker is reaped and its pool
+    slot is free. Under ``PythonConfig.supervise_tree`` the 504 also
+    waits until the processes that worker started are confirmed gone,
+    for up to ``tree_grace`` plus a second; ``drain()`` accounts for any
+    still being ended after that. The next request on that slot starts
+    a fresh worker and pays for its start.
+
+    It needs a worker to kill: the local executor under process or
+    kernel isolation. Any other workspace that runs handlers refuses it
+    when its app runtime is built (``NotSupportedError``), rather than
+    serve handlers it can't bound.
+
+    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Copy ``static_assets`` and check its in-memory files, and
-        validate ``csp_extend``, at construction: the traceback then
-        points at the embedder's own call."""
+        validate ``csp_extend`` and ``request_deadline``, at
+        construction: the traceback then points at the embedder's own
+        call."""
         object.__setattr__(self, "static_assets", _frozen_assets(self.static_assets))
         self._check_csp_extend()
+        self._check_request_deadline()
+
+    def _check_request_deadline(self) -> None:
+        value = self.request_deadline
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(
+                "request_deadline must be a number of seconds, not "
+                f"{type(value).__name__}"
+            )
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(
+                f"request_deadline must be positive and finite, got {value!r}"
+            )
 
     def _check_csp_extend(self) -> None:
         """A malformed directive must not ship into a served header: a
@@ -862,6 +916,18 @@ class AppRuntime:
         nothing to build here, nothing to reap in ``close``."""
         self._ws = ws
         self._config = config or AppsConfig()
+        if (
+            self._config.request_deadline is not None
+            and ws.runtime.executes
+            and not ws.runtime.view_deadline
+        ):
+            raise NotSupportedError(
+                "AppsConfig.request_deadline needs a handler's worker to kill, "
+                f"and this workspace's executor ({type(ws.runtime.executor).__name__}"
+                f", isolation={ws.runtime.python_config.isolation!r}) has none: "
+                "use process or kernel isolation on the local executor, or "
+                "leave request_deadline unset"
+            )
         self._frozen = frozen
         self._log_sink = log_sink
         self._screenshot_sink = screenshot_sink
@@ -1047,6 +1113,7 @@ class AppRuntime:
             extra_classes=self._contract,
             result_bytes=largest,
             bind=binding,
+            deadline=self._config.request_deadline,
         )
         result = ws.runtime.exec_python(
             source + _trailer(verb, text_limit, binary_limit, carry_limit),
@@ -1066,6 +1133,21 @@ class AppRuntime:
         where = f"{name}:{verb}" + (f" ?{qs}" if qs else "")
         if result.stdout:
             self._log(f"[{where}] stdout:\n{result.stdout}")
+        if result.deadline_exceeded:
+            if atomic:
+                ws.discard()
+            deadline = self._config.request_deadline
+            self._log(
+                f"[{where}] DEADLINE: stopped at the {deadline:g}s request "
+                "deadline. The usual cause is a handler blocked in a call (a "
+                "sleep, a socket, a request to another service): give that "
+                "call a timeout of its own."
+            )
+            return _error_response(
+                504,
+                f"the handler did not answer within {deadline:g}s",
+                log=self._log_path,
+            )
         if result.error is not None:
             if atomic:
                 ws.discard()
