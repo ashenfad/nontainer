@@ -43,6 +43,9 @@ jobs:
         # whole DudExecutor suite skipped silently in CI -- which is how
         # a dud breaking change reached us unnoticed.
         uv pip install --system -e ".[dev,apps,agno,mcp,dud]"
+        # TEMPORARY, dropped before merge: sandtrap's exec(deadline=) is
+        # unreleased (ashenfad/sandtrap#94).
+        uv pip install --system "sandtrap[render] @ git+https://github.com/ashenfad/sandtrap@feat/exec-deadline"
 
     # The browser is keyed on the Playwright version that was installed,
     # so a Playwright release fetches a fresh one. Linux still needs the
@@ -119,6 +122,9 @@ jobs:
     - name: Install with agno ${{ matrix.agno }}
       run: |
         uv pip install --system -e ".[dev,apps]" "agno==${{ matrix.agno }}"
+        # TEMPORARY, dropped before merge: sandtrap's exec(deadline=) is
+        # unreleased (ashenfad/sandtrap#94).
+        uv pip install --system "sandtrap[render] @ git+https://github.com/ashenfad/sandtrap@feat/exec-deadline"
     - name: Confirm the pin actually took
       # Belt and braces: an overlay that silently loses to an already
       # installed agno would make every assertion below vacuous, and a
@@ -174,6 +180,9 @@ jobs:
     - name: Install dependencies
       run: |
         uv pip install --system -e ".[dev,apps,agno,mcp,dud,postgres]"
+        # TEMPORARY, dropped before merge: sandtrap's exec(deadline=) is
+        # unreleased (ashenfad/sandtrap#94).
+        uv pip install --system "sandtrap[render] @ git+https://github.com/ashenfad/sandtrap@feat/exec-deadline"
 
     # The app tests publish to the store and serve from it, and they run
     # only with a browser: without one they skip, and the store's
