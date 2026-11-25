@@ -81,6 +81,11 @@ class PythonResult:
     result because materialization happens in ``run_python`` now, so an
     adapter rendering afterwards has no other way to learn of it."""
 
+    deadline_exceeded: bool = False
+    """The call ran past its ``ViewSpec.deadline`` and was ended there.
+    ``error`` says so, and ``namespace`` holds nothing the code would
+    have returned. Always False for a call without a deadline."""
+
     def __bool__(self) -> bool:
         return self.error is None
 

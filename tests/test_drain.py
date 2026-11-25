@@ -84,6 +84,42 @@ def test_drain_confirms_what_the_session_worker_started_is_gone(helpers):
     assert not _running(helpers[0])
 
 
+class _Pids:
+    """A host object a call reports the helpers it started to."""
+
+    def __init__(self):
+        self.pids = []
+
+    def add(self, pid: int) -> None:
+        self.pids.append(pid)
+
+
+@linux_only
+def test_a_call_past_its_deadline_returns_once_its_tree_is_gone(helpers):
+    """A view call killed at its deadline returns once its worker's
+    helpers are gone, so the capacity it held is free when it returns."""
+    pids = _Pids()
+    ws = _supervised("drain-deadline", host_objects={"pids": pids})
+    try:
+        result = ws.runtime.exec_python(
+            "import time, tree_state\n"
+            "pids.add(tree_state.spawn(60, ignore_term=True))\n"
+            "time.sleep(30)",
+            view=ViewSpec(
+                readonly_fs=True, readonly_cache=True, timeout=10.0, deadline=1.0
+            ),
+            echo="none",
+        )
+        helpers.extend(pids.pids)
+        assert result.deadline_exceeded, result.error
+        assert len(pids.pids) == 1
+        assert not _running(pids.pids[0])
+        drained = ws.runtime.drain()
+    finally:
+        ws.close()
+    assert drained == DrainResult("confirmed", workers=1, helpers=1, killed=1)
+
+
 def _in_thread(fn):
     """Start ``fn`` on a thread; the thread, and a list its result lands in."""
     out = []

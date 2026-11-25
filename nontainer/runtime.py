@@ -368,6 +368,19 @@ class Runtime:
         """
         return getattr(self._executor, "view_result_limit", None)
 
+    @property
+    def view_deadline(self) -> bool:
+        """Whether a view execution can be held to ``ViewSpec.deadline``.
+
+        The apps runtime refuses ``AppsConfig.request_deadline`` where
+        this is False, rather than serve handlers it can't bound. The
+        executor declares it (``Executor.view_deadline``), and one that
+        declares nothing can't: LocalExecutor can under process or
+        kernel isolation, which have a worker to kill, and not in
+        process.
+        """
+        return bool(getattr(self._executor, "view_deadline", False))
+
     def guest_to_host(self, guest_path: str) -> str | None:
         """A guest-absolute path as the HOST spells it, or None.
 

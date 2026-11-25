@@ -242,6 +242,13 @@ carry is refused with a message naming the limit rather than lost on
 the way. `DudExecutor` declares 64 MiB; `LocalExecutor` carries
 whatever it is handed and declares nothing.
 
+**`view_deadline`** *(optional)* — whether a view call can be held to
+`ViewSpec.deadline`. `Runtime.view_deadline` reads it and answers False
+for an executor that does not define the name, and apps refuses
+`AppsConfig.request_deadline` there. `LocalExecutor` answers True under
+process or kernel isolation, where it kills the call's worker at the
+deadline.
+
 **`copies_tree`** *(optional)* — whether execution runs against a copy
 of the workspace tree the executor made in a machine of its own, rather
 than the workspace filesystem in place. The workspace then refuses a
@@ -324,7 +331,7 @@ never asked to re-materialize a tree it is mid-exec against.
 restricted, budgeted execution — the apps extra's handler dispatch is
 the only consumer. A `ViewSpec` declares the *intent*
 (`readonly_fs`, `readonly_cache`, `timeout`, `tick_limit`,
-`extra_classes`, `result_bytes`) and each executor realizes it its own way:
+`extra_classes`, `result_bytes`, `deadline`) and each executor realizes it its own way:
 `LocalExecutor` builds a sandtrap sandbox with a memoized policy and
 registers the extra classes; `DudExecutor` ships those classes' module
 *source* so a guest with no nontainer installed can synthesize them,
@@ -340,7 +347,12 @@ executor has no tick machinery, and wall-clock is its guard.
 `result_bytes` is the largest bytes value the caller needs back (apps:
 the response body, under its size caps); `DudExecutor` raises dud's
 per-value and per-exec harvest caps to carry it, and `LocalExecutor`
-has nothing to raise.
+has nothing to raise. `deadline` is a hard limit on the call, counted
+from when the executor takes it: an executor that keeps it ends the call
+there however it must and sets `PythonResult.deadline_exceeded`, and one
+that can't raises `NotSupportedError` rather than run the call
+unbounded. `LocalExecutor` keeps it under process or kernel isolation,
+by killing the call's worker; `DudExecutor` refuses it.
 
 What a view exec must **carry back** is narrow. Apps dispatch encodes
 the handler's response inside the execution, using a class it passes in

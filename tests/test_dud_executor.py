@@ -627,6 +627,21 @@ def test_exec_python_stdin_argv_fail_loud(ws):
         ws.runtime.exec_python("pass", stdin="data")
 
 
+def test_a_view_deadline_is_refused(ws):
+    """A deadline isn't wired for the guest yet, so a view call with one
+    is refused rather than run unbounded, and an app runtime refuses
+    ``request_deadline`` when it is built."""
+    from nontainer import ViewSpec
+    from nontainer.apps import AppsConfig, enable_apps
+    from nontainer.errors import NotSupportedError
+
+    assert not ws.runtime.view_deadline
+    with pytest.raises(NotSupportedError, match="deadline"):
+        ws.runtime.exec_python("pass", view=ViewSpec(deadline=1.0))
+    with pytest.raises(NotSupportedError, match="request_deadline"):
+        enable_apps(ws, AppsConfig(request_deadline=1.0))
+
+
 def test_bad_inputs_raise_typeerror(ws):
     with pytest.raises(TypeError):
         ws.run_python("pass", inputs={"obj": object()})
